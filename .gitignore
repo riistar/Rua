@@ -1,0 +1,44 @@
+# Delphi build output
+*.exe
+*.dll
+*.dcu
+*.dcpil
+*.bpl
+*.drc
+*.res
+*.rsm
+*.map
+*.tds
+*.drc
+*.local
+*.identcache
+*.tvsconfig
+*.skincfg
+
+# Temp/build directories
+__history/
+__recovery/
+__snapshots/
+bin/
+tmp_*/
+delphi/build/
+Win32/
+Win64/
+
+# IDE
+*.cbk
+*.~*
+*.bak
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Release binaries (built)
+release/*.exe
+release/nxl3p_shim.dll
+release/nxl3p_stub.exe
+
+# Runtime dependencies (tracked)
+!release/sqlite3.dll
+!release/WebView2Loader.dll

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>WebView4Delphi: uWVTypeLibrary: Interface ICoreWebView2ServiceWorkerManager</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="PasDoc 1.0.4">
+<meta http-equiv="content-type" content="text/html; charset=utf-8">
+<link rel="StyleSheet" type="text/css" href="bootstrap.min.css">
+<link rel="StyleSheet" type="text/css" href="pasdoc.css">
+<style type="text/css">
+body { margin: 0.5em; }
+.badge { padding: 0.1em 0.5em; color: white; }
+</style></head>
+<body>
+<span id="ICoreWebView2ServiceWorkerManager"></span><h1 class="cio">Interface ICoreWebView2ServiceWorkerManager</h1>
+<div class="sections">
+<div class="one_section"><a class="section" href="#PasDoc-Description">Description</a></div><div class="one_section"><a class="section" href="#PasDoc-Hierarchy">Hierarchy</a></div><div class="one_section"><a class="section" href="#PasDoc-Methods">Methods</a></div></div>
+<span id="PasDoc-Description"></span><h2 class="unit">Unit</h2>
+<p class="unitlink">
+<a href="uWVTypeLibrary.html">uWVTypeLibrary</a></p>
+<h2 class="declaration">Declaration</h2>
+<p class="declaration">
+<code>type ICoreWebView2ServiceWorkerManager = interface(IUnknown)</code></p>
+<h2 class="description">Description</h2>
+<p>
+ This interface manages registrations for service workers in WebView2. </p>
+<p>
+
+
+<p>&lt;see href=&quot;<a href="https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2serviceworkermanager">https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2serviceworkermanager</a>&quot;&gt;See the ICoreWebView2ServiceWorkerManager article.)</p>
+<span id="PasDoc-Hierarchy"></span><h2 class="hierarchy">Hierarchy</h2>
+<ul class="hierarchy"><li class="ancestor">IUnknown</li>
+<li class="thisitem">ICoreWebView2ServiceWorkerManager</li></ul><h2 class="overview">Overview</h2>
+<span id="PasDoc-Methods"></span><h3 class="summary">Methods</h3>
+<table class="summary wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2ServiceWorkerManager.html#add_ServiceWorkerRegistered-ICoreWebView2ServiceWorkerRegisteredEventHandler-EventRegistrationToken-">add_ServiceWorkerRegistered</a></strong>(const eventHandler: <a href="uWVTypeLibrary.ICoreWebView2ServiceWorkerRegisteredEventHandler.html">ICoreWebView2ServiceWorkerRegisteredEventHandler</a>; out token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr class="list2 visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2ServiceWorkerManager.html#remove_ServiceWorkerRegistered-EventRegistrationToken-">remove_ServiceWorkerRegistered</a></strong>(token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2ServiceWorkerManager.html#GetServiceWorkerRegistrations-ICoreWebView2GetServiceWorkerRegistrationsCompletedHandler-">GetServiceWorkerRegistrations</a></strong>(const handler: <a href="uWVTypeLibrary.ICoreWebView2GetServiceWorkerRegistrationsCompletedHandler.html">ICoreWebView2GetServiceWorkerRegistrationsCompletedHandler</a>): HResult; stdcall;</code></td>
+</tr>
+<tr class="list2 visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2ServiceWorkerManager.html#GetServiceWorkerRegistrationsForScope-PWideChar-ICoreWebView2GetServiceWorkerRegistrationsCompletedHandler-">GetServiceWorkerRegistrationsForScope</a></strong>(ScopeUri: PWideChar; const handler: <a href="uWVTypeLibrary.ICoreWebView2GetServiceWorkerRegistrationsCompletedHandler.html">ICoreWebView2GetServiceWorkerRegistrationsCompletedHandler</a>): HResult; stdcall;</code></td>
+</tr>
+</table>
+<h2 class="description">Description</h2>
+<h3 class="detail">Methods</h3>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="add_ServiceWorkerRegistered-ICoreWebView2ServiceWorkerRegisteredEventHandler-EventRegistrationToken-"></span><code>function <strong>add_ServiceWorkerRegistered</strong>(const eventHandler: <a href="uWVTypeLibrary.ICoreWebView2ServiceWorkerRegisteredEventHandler.html">ICoreWebView2ServiceWorkerRegisteredEventHandler</a>; out token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Adds an event handler for the `ServiceWorkerRegistered` event. A ServiceWorker is a specific type of worker that takes a JavaScript file that can control the web-page/site that it is associated with, intercepting and modifying navigation and resource requests, and caching resources in a very granular fashion to give you complete control over how app behaves in certain situations.
+
+<p>Service workers essentially act as proxy servers that sit between web applications, the browser, and the network (when available). They run in a different context from the web page, which means they have no direct access to the DOM. Unlike dedicated and shared workers, which may have direct access to a global scope shared with other scripts, service workers operate in isolation from the DOM, ensuring a more secure and controlled environment.
+
+<p>This event is raised when a web application registers a service worker using the `navigator.serviceWorker.register(&quot;/sw.js&quot;)` method. See the [Service Worker Registration](<a href="https://developer.mozilla.org/docs/Web/API/ServiceWorkerRegistration">https://developer.mozilla.org/docs/Web/API/ServiceWorkerRegistration</a>) for more information.
+
+<p>\snippet ScenarioServiceWorkerManager.cpp ServiceWorkerRegistered </p>
+<h6 class="description_section">Attributes</h6>
+<dl class="attributes">
+  <dt>GUID['{A2D52FD4-9B10-5971-8499-C67D1560F47A}']</dt>
+  <dd></dd>
+</dl>
+</td></tr>
+</table>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="remove_ServiceWorkerRegistered-EventRegistrationToken-"></span><code>function <strong>remove_ServiceWorkerRegistered</strong>(token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Removes an event handler previously added with `add_ServiceWorkerRegistered`. </p>
+</td></tr>
+</table>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="GetServiceWorkerRegistrations-ICoreWebView2GetServiceWorkerRegistrationsCompletedHandler-"></span><code>function <strong>GetServiceWorkerRegistrations</strong>(const handler: <a href="uWVTypeLibrary.ICoreWebView2GetServiceWorkerRegistrationsCompletedHandler.html">ICoreWebView2GetServiceWorkerRegistrationsCompletedHandler</a>): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Gets a list of the service worker registrations under the same profile.
+
+<p>This method returns a list of `CoreWebView2ServiceWorkerRegistration` objects, each representing a service worker registration.
+
+<p>This method corresponds to the `getRegistrations` method of the `ServiceWorkerContainer` object in the DOM which returns a Promise that resolves to an array of `ServiceWorkerRegistration` objects. See the [MDN documentation] (<a href="https://developer.mozilla.org/docs/Web/API/ServiceWorkerContainer/getRegistrations">https://developer.mozilla.org/docs/Web/API/ServiceWorkerContainer/getRegistrations</a>) for more information. </p>
+</td></tr>
+</table>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="GetServiceWorkerRegistrationsForScope-PWideChar-ICoreWebView2GetServiceWorkerRegistrationsCompletedHandler-"></span><code>function <strong>GetServiceWorkerRegistrationsForScope</strong>(ScopeUri: PWideChar; const handler: <a href="uWVTypeLibrary.ICoreWebView2GetServiceWorkerRegistrationsCompletedHandler.html">ICoreWebView2GetServiceWorkerRegistrationsCompletedHandler</a>): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Gets the service worker registrations associated with the specified scope. If a service worker has been registered for the given scope, it gets the list of `CoreWebView2ServiceWorkerRegistration` objects otherwise returns empty list.
+
+<p>If the service worker is registered with a `scope` of '/app/' for an application at <a href="https://example.com/">https://example.com/</a>, you should specify the full qualified URI i.e., <a href="https://example.com/app/">https://example.com/app/</a> when calling this method. If the scope was not explicitly specified during registration, you should use the directory where the service worker script resides, for example, <a href="https://example.com/app/">https://example.com/app/</a>.
+
+<p>Refer to the Host Name Canonicalization for details on how provided `scriptUri` normalization is performed. For example, `<a href="HTTPS://m">HTTPS://m</a>ünchen.de/` will be normalized to `<a href="https://www.xn--kfk.com">https://www.xn--kfk.com</a>` for comparison.
+
+<p>This corresponds to the `getRegistration` method of the `ServiceWorkerContainer` object in the DOM which returns a Promise that resolves to a `ServiceWorkerRegistration` object. See the [MDN documentation] (<a href="https://developer.mozilla.org/docs/Web/API/ServiceWorkerContainer/getRegistration">https://developer.mozilla.org/docs/Web/API/ServiceWorkerContainer/getRegistration</a>) for more information.
+
+<p>If scopeUri is empty string or null or invalid, the completed handler immediately returns `E_INVALIDARG` and with a null pointer. </p>
+</td></tr>
+</table>
+<hr><span class="appinfo"><em>Generated by <a href="https://pasdoc.github.io/">PasDoc 1.0.4</a>. </em>
+</span>
+</body></html>

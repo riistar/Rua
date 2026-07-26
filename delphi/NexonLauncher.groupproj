@@ -1,0 +1,60 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{0462A7D1-602F-42D6-9D3C-582BB74EC759}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="Rua.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="nxl3p_stub.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="nxl3p_shim.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="Rua">
+        <MSBuild Projects="Rua.dproj"/>
+    </Target>
+    <Target Name="Rua:Clean">
+        <MSBuild Projects="Rua.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="Rua:Make">
+        <MSBuild Projects="Rua.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="nxl3p_stub">
+        <MSBuild Projects="nxl3p_stub.dproj"/>
+    </Target>
+    <Target Name="nxl3p_stub:Clean">
+        <MSBuild Projects="nxl3p_stub.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="nxl3p_stub:Make">
+        <MSBuild Projects="nxl3p_stub.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="nxl3p_shim">
+        <MSBuild Projects="nxl3p_shim.dproj"/>
+    </Target>
+    <Target Name="nxl3p_shim:Clean">
+        <MSBuild Projects="nxl3p_shim.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="nxl3p_shim:Make">
+        <MSBuild Projects="nxl3p_shim.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="Rua;nxl3p_stub;nxl3p_shim"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="Rua:Clean;nxl3p_stub:Clean;nxl3p_shim:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="Rua:Make;nxl3p_stub:Make;nxl3p_shim:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>WebView4Delphi: uWVTypeLibrary: Interface ICoreWebView2Frame8</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="PasDoc 1.0.4">
+<meta http-equiv="content-type" content="text/html; charset=utf-8">
+<link rel="StyleSheet" type="text/css" href="bootstrap.min.css">
+<link rel="StyleSheet" type="text/css" href="pasdoc.css">
+<style type="text/css">
+body { margin: 0.5em; }
+.badge { padding: 0.1em 0.5em; color: white; }
+</style></head>
+<body>
+<span id="ICoreWebView2Frame8"></span><h1 class="cio">Interface ICoreWebView2Frame8</h1>
+<div class="sections">
+<div class="one_section"><a class="section" href="#PasDoc-Description">Description</a></div><div class="one_section"><a class="section" href="#PasDoc-Hierarchy">Hierarchy</a></div><div class="one_section"><a class="section" href="#PasDoc-Methods">Methods</a></div></div>
+<span id="PasDoc-Description"></span><h2 class="unit">Unit</h2>
+<p class="unitlink">
+<a href="uWVTypeLibrary.html">uWVTypeLibrary</a></p>
+<h2 class="declaration">Declaration</h2>
+<p class="declaration">
+<code>type ICoreWebView2Frame8 = interface(<a class="normal" href="uWVTypeLibrary.ICoreWebView2Frame7.html">ICoreWebView2Frame7</a>)</code></p>
+<h2 class="description">Description</h2>
+<p>
+ A continuation of the `ICoreWebView2Frame` interface to manage dedicated workers. </p>
+<p>
+
+
+<p>&lt;see href=&quot;<a href="https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2frame8">https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2frame8</a>&quot;&gt;See the ICoreWebView2Frame8 article.)</p>
+<span id="PasDoc-Hierarchy"></span><h2 class="hierarchy">Hierarchy</h2>
+<ul class="hierarchy"><li class="ancestor">IUnknown</li>
+<li class="ancestor"><a class="normal" href="uWVTypeLibrary.ICoreWebView2Frame.html">ICoreWebView2Frame</a></li>
+<li class="ancestor"><a class="normal" href="uWVTypeLibrary.ICoreWebView2Frame2.html">ICoreWebView2Frame2</a></li>
+<li class="ancestor"><a class="normal" href="uWVTypeLibrary.ICoreWebView2Frame3.html">ICoreWebView2Frame3</a></li>
+<li class="ancestor"><a class="normal" href="uWVTypeLibrary.ICoreWebView2Frame4.html">ICoreWebView2Frame4</a></li>
+<li class="ancestor"><a class="normal" href="uWVTypeLibrary.ICoreWebView2Frame5.html">ICoreWebView2Frame5</a></li>
+<li class="ancestor"><a class="normal" href="uWVTypeLibrary.ICoreWebView2Frame6.html">ICoreWebView2Frame6</a></li>
+<li class="ancestor"><a class="normal" href="uWVTypeLibrary.ICoreWebView2Frame7.html">ICoreWebView2Frame7</a></li>
+<li class="thisitem">ICoreWebView2Frame8</li></ul><h2 class="overview">Overview</h2>
+<span id="PasDoc-Methods"></span><h3 class="summary">Methods</h3>
+<table class="summary wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2Frame8.html#add_DedicatedWorkerCreated-ICoreWebView2FrameDedicatedWorkerCreatedEventHandler-EventRegistrationToken-">add_DedicatedWorkerCreated</a></strong>(const eventHandler: <a href="uWVTypeLibrary.ICoreWebView2FrameDedicatedWorkerCreatedEventHandler.html">ICoreWebView2FrameDedicatedWorkerCreatedEventHandler</a>; out token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr class="list2 visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2Frame8.html#remove_DedicatedWorkerCreated-EventRegistrationToken-">remove_DedicatedWorkerCreated</a></strong>(token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+</table>
+<h2 class="description">Description</h2>
+<h3 class="detail">Methods</h3>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="add_DedicatedWorkerCreated-ICoreWebView2FrameDedicatedWorkerCreatedEventHandler-EventRegistrationToken-"></span><code>function <strong>add_DedicatedWorkerCreated</strong>(const eventHandler: <a href="uWVTypeLibrary.ICoreWebView2FrameDedicatedWorkerCreatedEventHandler.html">ICoreWebView2FrameDedicatedWorkerCreatedEventHandler</a>; out token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Adds an event handler for the `DedicatedWorkerCreated` event. Subscribe to this event that gets raised when a new dedicated worker is created from an iframe.
+
+<p>A Dedicated Worker is a type of web worker that allows you to run Javascript code in the background without blocking the main thread, making them useful for tasks like heavy computations, data processing, and parallel execution. It is &quot;dedicated&quot; because it is linked to a single parent document and cannot be shared with other scripts.
+
+<p>This event is raised when a web application creates a dedicated worker using the `new Worker(&quot;/worker.js&quot;)` method. See the [Worker](<a href="https://developer.mozilla.org/docs/Web/API/Worker/Worker">https://developer.mozilla.org/docs/Web/API/Worker/Worker</a>) for more information. </p>
+<h6 class="description_section">Attributes</h6>
+<dl class="attributes">
+  <dt>GUID['{9DEFF655-E3D5-5B8F-9107-52E66B3EC3FC}']</dt>
+  <dd></dd>
+</dl>
+</td></tr>
+</table>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="remove_DedicatedWorkerCreated-EventRegistrationToken-"></span><code>function <strong>remove_DedicatedWorkerCreated</strong>(token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Removes an event handler previously added with `add_DedicatedWorkerCreated`. </p>
+</td></tr>
+</table>
+<hr><span class="appinfo"><em>Generated by <a href="https://pasdoc.github.io/">PasDoc 1.0.4</a>. </em>
+</span>
+</body></html>
