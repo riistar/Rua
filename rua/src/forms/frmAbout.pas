@@ -31,7 +31,7 @@ begin
   LblCopyright.Caption := 'Copyright '#169' Rii / RiiStar';
   LblCredits.Caption  := 'Thanks to:';
   LblThanks.Caption   :=
-    'Hydwwn project by Sven'#13#10+
+    'Hyddwn project by Sven'#13#10+
     'Cursey'#13#10+
     'Xcelled194';
 end;
