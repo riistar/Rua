@@ -1,48 +1,31 @@
-# Rua - 3rd party (Mabinogi) Nexon Launcher
+# Rua
 
-## Requirements
+A lightweight 3rd-party launcher for Mabinogi NA that replaces the official Nexon Launcher entirely.
 
-- Delphi 10.4.2+ (for TEdgeBrowser / WebView2 support)
-- Microsoft Edge WebView2 Runtime installed (ships with Windows 11; installer at microsoft.com/edge/webview2)
-- Windows 10 x64+
+No heavy Electron wrapper, no CEF browser, no background services. Just a small native Windows app that logs you in and starts the game.
 
-## Setup in Delphi IDE
+## What it does
 
-1. File → Open → `NexonLauncher3P.dpr`
-2. Delphi will prompt to create `NexonLauncher3P.dproj` — accept
-3. Build → Build (F9)
+- Manages multiple profiles/accounts
+- Logs in via email/password or browser SSO
+- Stores cookies securely in Windows Credential Manager
+- Launches the game without Nexon's launcher running
+- Game/client updater (manifest-based patcher with parallel downloads)
+- Minimizes to tray while you play
 
-No external packages or third-party components required.
-All dependencies are RTL/VCL/Winapi units.
+## What it is not
 
-## Units
+This isn't a wrapper or a mod. It's a full replacement for the official launcher. The game client connects to Nexon's servers exactly as it always has — Rua just handles the auth and launch part instead of Nexon's software.
 
-| Unit | Purpose |
-|---|---|
-| `uProtocol` | Pipe frame read/write + JSON request/response |
-| `uPipeServer` | Named pipe server thread (serves game SDK) |
-| `uCredStore` | Windows Credential Manager (CredWriteW/CredReadW) |
-| `uProfiles` | Profile CRUD (index JSON + cred store) |
-| `uNexonAPI` | FetchTicket, FetchManifestHash |
-| `uDeviceId` | SHA256(WMIC UUID + MachineGuid) |
-| `uGameLaunch` | Orchestrates ticket + pipe + ShellExecuteW |
+## Building
 
-## Forms
+Open `delphi/rua/Rua.dproj` in Delphi 12.1+ and build (Win64 target).
+Or run `powershell -File build/delphi.ps1` to build all projects.
+Requires Windows 10 x64+ and the WebView2 Runtime (ships with Windows 11).
 
-| Form | Purpose |
-|---|---|
-| `frmMain` | Profile list, game path, launch, update check |
-| `frmLogin` | TEdgeBrowser at nexon.com, auto cookie capture |
-| `frmProfile` | Profile name input dialog |
+## Credits
 
-## Known PoC gaps
-
-- `UserNo` field not yet populated from session (requires parsing nexon.com response)
-- `getSDKConfiguration.hashedUserNo` sent empty — game may not need it for auth
-- Cookie TTL unknown — re-login prompt on HTTP 401 from ticket endpoint
-
-## Pipe served
-
-`\\.\pipe\{79d303ac-af79-46c3-9ae0-6cd4ff4805ad}`
-
-Handles: `getProductTicket`, `getSDKConfiguration`, `productActive`, `productClosed`, `getClientToken`
+- Rii / RiiStar
+- Sven — Hydwwn project
+- Cursey
+- Xcelled194
