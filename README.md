@@ -1,4 +1,4 @@
-# NexonLauncher3P — Delphi Windows PoC
+# Rua - 3rd party (Mabinogi) Nexon Launcher
 
 ## Requirements
 
