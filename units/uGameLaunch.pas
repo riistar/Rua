@@ -304,7 +304,7 @@ begin
   SubstitutePassport(Params, Ticket);
   CL       := BuildCommandLine(GameExePath, Params);
   ParamStr := Trim(Copy(CL, Length('"' + GameExePath + '"') + 1, MaxInt));
-  LaunchLog('Launch params: ' + ParamStr);
+  {$IFDEF DEBUG}LaunchLog('Launch params: ' + ParamStr);{$ENDIF}
 
   // 9. Pipe server (handles getProductTicket / getSDKConfiguration callbacks)
   StopPipe;

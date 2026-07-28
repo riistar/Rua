@@ -368,11 +368,14 @@ end;
 procedure DumpDebug(const Tag: string; const Resp: IHTTPResponse;
   const Http: THTTPClient; const ParsedCookies: string;
   const ReqBody: string = '');
+{$IFDEF DEBUG}
 var
   Lines: TStringList;
   H:     TNameValuePair;
   Path:  string;
+{$ENDIF}
 begin
+{$IFDEF DEBUG}
   try
     Lines := TStringList.Create;
     try
@@ -401,6 +404,7 @@ begin
       Lines.Free;
     end;
   except end;
+{$ENDIF}
 end;
 
 function ExchangeTpaForNxLSession(const TpaSession, DeviceId: string;
