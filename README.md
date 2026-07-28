@@ -19,6 +19,8 @@ This isn't a wrapper or a mod. It's a full replacement for the official launcher
 
 ## Building
 
+Requires: https://github.com/salvadordf/WebView4Delphi
+
 Open `delphi/rua/Rua.dproj` in Delphi 12.1+ and build (Win64 target).
 Or run `powershell -File build/delphi.ps1` to build all projects.
 Requires Windows 10 x64+ and the WebView2 Runtime (ships with Windows 11).
