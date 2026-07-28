@@ -29,6 +29,6 @@ Requires Windows 10 x64+ and the WebView2 Runtime (ships with Windows 11).
 
 ## Special thanks to past projects/code
 
-- Sven — Hydwwn project
+- Sven — Hyddwn project
 - Cursey
 - Xcelled194
