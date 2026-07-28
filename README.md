@@ -12,6 +12,7 @@ No heavy Electron wrapper, no CEF browser, no background services. Just a small 
 - Launches the game without Nexon's launcher running
 - Game/client updater (manifest-based patcher with parallel downloads)
 - Minimizes to tray while you play
+- Login sessions do time out, minimum is usually 2 hours and then you need to refresh/re-login affected accounts (not a perfect solution, but Nexon server side limitation)
 
 ## What it is not
 
