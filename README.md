@@ -8,7 +8,7 @@ No heavy Electron wrapper, no CEF browser, no background services. Just a small 
 
 - Manages multiple profiles/accounts
 - Logs in via email/password or browser SSO through the Nexon site. Like the official launcher does.
-- Stores cookies securely in Windows Credential Manager
+- Stores login/session data securely in Windows Credential Manager
 - Launches the game without Nexon's launcher running
 - Game/client updater (manifest-based patcher with parallel downloads)
 - Minimizes to tray while you play
