@@ -4,6 +4,14 @@ A lightweight 3rd-party launcher for Mabinogi NA that replaces the official Nexo
 
 No heavy Electron wrapper, no CEF browser, no background services. Just a small native Windows app that logs you in and starts the game.
 
+## Screenshots
+
+Follows the active VCL style, light or dark:
+
+| Light | Dark |
+| --- | --- |
+| ![Rua, light theme](docs/screenshots/rua-light.png) | ![Rua, dark theme](docs/screenshots/rua-dark.png) |
+
 ## What it does
 
 - Manages multiple profiles/accounts

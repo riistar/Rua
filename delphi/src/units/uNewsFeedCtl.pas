@@ -375,8 +375,11 @@ begin
         Bg           := MixColor(clWhite, Accent, 0.15);
         P.Bg         := Bg;
         TextCol      := TextOn(Bg);
-        P.TitleColor := MixColor(clBlack, Accent, 0.65);
-        SubCol       := MixColor(TextCol, Bg, 0.45);
+        // Pale accents (grey/silver, blue) vanish on a pale tint, so darken the
+        // accent toward black for both the category label and the title.
+        P.ChipColor  := MixColor(Accent, clBlack, 0.45);
+        P.TitleColor := MixColor(Accent, clBlack, 0.68);
+        SubCol       := MixColor(TextCol, Bg, 0.25);
       end;
       P.SummaryColor := SubCol;
       P.DateColor  := SubCol;
