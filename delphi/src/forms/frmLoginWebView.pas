@@ -42,6 +42,8 @@ type
     FSilentChecked:    Boolean; // True after initial cookie check before navigating to login page
     FPostLoginCapture: Boolean; // True when GetCookies was triggered by post-login navigation
     FPostLoginNavCount: Integer; // Count of post-login navigations to launcher pages (avoids redirect loops)
+    FExchangeFailed:     Boolean; // True when TPA exchange failed — skip re-exchange, use NxLSession fast path
+    FFailedTpa:          string;  // TpaSession value that failed to exchange (reset when a new TpaSession appears)
     FAltCookieUri:     Boolean; // Alternates between www.nexon.com and nxl.nxfs.nexon.com for GetCookies
     FClosePending:     Integer; // Countdown: NxLSession found, wait N more polls for cookies to stabilize before closing
     FChoicePanel:      TPanel;  // Login method chooser (Nexon Account vs SSO)
@@ -540,7 +542,12 @@ begin
   // a previous Google session. Email/password login via regional-auth sets NxLSession
   // without updating TpaSession, so the old value must be ignored and NxLSession used directly.
   TpaSession := ExtractCookieValue(Raw, 'TpaSession');
-  if TpaSession <> '' then
+
+  // A new TpaSession since the last failed exchange → fresh login, retry the exchange.
+  if FExchangeFailed and (TpaSession <> FFailedTpa) then
+    FExchangeFailed := False;
+
+  if (TpaSession <> '') and (not FExchangeFailed) then
   begin
     // Only process TPA if on a nexon domain — SSO OAuth pages (accounts.google.com,
     // facebook.com, etc.) set cookies unrelated to the TPA exchange.
@@ -567,30 +574,52 @@ begin
     FExchanging          := True;
     LblStatus.Caption    := 'Logged in — exchanging session...';
 
-    FCookies := ExchangeTpaForNxLSession(TpaSession, GetDeviceId(FProfileName), HttpStatus);
+    try
+      FCookies := ExchangeTpaForNxLSession(TpaSession, GetDeviceId(FProfileName), HttpStatus);
+    except
+      // Network/TLS failure — treat as a failed exchange (fall back below).
+      FCookies   := '';
+      HttpStatus := -1;
+    end;
     if FCookies = '' then
     begin
-      // Exchange failed — close with whatever cookies the page has.
-      FCookies := Raw;
-      Close;
+      // Exchange failed. This is NOT a cancellation — SSO/web login already succeeded.
+      // TpaSession is single-use and expires in seconds, so a rejected exchange must
+      // not discard the valid browser session. If the page set a browser NxLSession,
+      // fall through to the fast-path handling below. Otherwise keep the dialog open
+      // with a clear error so the user can re-login or cancel.
+      FExchangeFailed := True;
+      FFailedTpa      := TpaSession;
+      FExchanging     := False;
+      if Pos('NxLSession', Raw) = 0 then
+      begin
+        LblStatus.Caption := Format(
+          'Session exchange failed (HTTP %d). TpaSession expires in seconds — ' +
+          'log in again and retry, or press Cancel.',
+          [HttpStatus]);
+        TimerCookies.Enabled := True;
+        Exit;
+      end;
+      // NxLSession present — fall through to fast-path handling below.
+    end
+    else
+    begin
+      // Carry browser-session cookies not returned by the exchange endpoint.
+      var CarryNames: TArray<string> := ['id_token', 'TpaSession', 'arenaSid', 'tpatype', 'PARTNERKEY'];
+      for var CName in CarryNames do
+      begin
+        var CVal := ExtractCookieValue(Raw, CName);
+        if (CVal <> '') and (Pos(CName + '=', FCookies) = 0) then
+          FCookies := FCookies + '; ' + CName + '=' + CVal;
+      end;
+      // PARTNERKEY=3269 identifies the Nexon Launcher client — hardcode if missing.
+      if Pos('PARTNERKEY=', FCookies) = 0 then
+        FCookies := FCookies + '; PARTNERKEY=3269';
+
+      LblStatus.Caption := 'Logged in. Closing...';
+      ModalResult := mrOK;
       Exit;
     end;
-
-    // Carry browser-session cookies not returned by the exchange endpoint.
-    var CarryNames: TArray<string> := ['id_token', 'TpaSession', 'arenaSid', 'tpatype', 'PARTNERKEY'];
-    for var CName in CarryNames do
-    begin
-      var CVal := ExtractCookieValue(Raw, CName);
-      if (CVal <> '') and (Pos(CName + '=', FCookies) = 0) then
-        FCookies := FCookies + '; ' + CName + '=' + CVal;
-    end;
-    // PARTNERKEY=3269 identifies the Nexon Launcher client — hardcode if missing.
-    if Pos('PARTNERKEY=', FCookies) = 0 then
-      FCookies := FCookies + '; PARTNERKEY=3269';
-
-    LblStatus.Caption := 'Logged in. Closing...';
-    ModalResult := mrOK;
-    Exit;
   end;
 
   // Fast path: NxLSession without TpaSession.

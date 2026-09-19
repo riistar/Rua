@@ -31,6 +31,9 @@ type
     MfaType: string;
   end;
 
+  // Game not playable / under maintenance (from /game-auth2/v1/access isPlayable).
+  EGamePlayableFailed = class(Exception);
+
   TGameConfig = record
     ExecutablePath:   string;
     WorkingDirectory: string;
@@ -43,6 +46,18 @@ type
     ManifestUrl: string;
     ReleaseDate: string;
     ServiceId:   string;
+  end;
+
+  // Parsed from POST /api/game-auth2/v1/access response body.
+  // isPlayable=False is the official launcher's verdict for "under maintenance".
+  TAccessInfo = record
+    HttpStatus:  Integer;    // HTTP status of the /access call (0 = no response)
+    IsPlayable:  Boolean;
+    IsDeveloper: Boolean;
+    IpBlocked:   Boolean;
+    IsMinor:     Boolean;
+    IsUnder13:   Boolean;
+    Required2FA: Boolean;
   end;
 
 function FetchPassport(const Cookies: string; const ProductId: string): string;
@@ -68,7 +83,13 @@ function CheckSessionValid(const Cookies: string; out HttpStatus: Integer): Bool
 
 // Call /api/game-auth2/v1/access before CheckPlayable/FetchPassport (official launcher order).
 // Returns the original Cookies string merged with any Set-Cookie headers from the response.
-function FetchAccess(const Cookies: string; const ProductId: string): string;
+function FetchAccess(const Cookies: string; const ProductId: string): string; overload;
+
+// Same, but also parses the access verdict (isPlayable etc.) into AccessInfo.
+// isPlayable=False means the game is down/under maintenance — surface it before launching.
+// Raises EGamePlayableFailed when the game is not playable.
+function FetchAccess(const Cookies: string; const ProductId: string;
+  out AccessInfo: TAccessInfo): string; overload;
 
 // Call GET /api/account/v1/account and merge Set-Cookie headers.
 // Official launcher calls this BEFORE access to establish session state.
@@ -547,6 +568,14 @@ end;
 
 function FetchAccess(const Cookies: string; const ProductId: string): string;
 var
+  Dummy: TAccessInfo;
+begin
+  Result := FetchAccess(Cookies, ProductId, Dummy);
+end;
+
+function FetchAccess(const Cookies: string; const ProductId: string;
+  out AccessInfo: TAccessInfo): string;
+var
   Http:     THTTPClient;
   Body:     TStringStream;
   Resp:     IHTTPResponse;
@@ -554,8 +583,16 @@ var
   SetLog:   string;
   CookVal:  string;
   SemiPos:  Integer;
+  J:        TJSONObject;
 begin
-  Result := Cookies;
+  Result     := Cookies;
+  AccessInfo.HttpStatus   := 0;
+  AccessInfo.IsPlayable  := False;
+  AccessInfo.IsDeveloper := False;
+  AccessInfo.IpBlocked   := False;
+  AccessInfo.IsMinor     := False;
+  AccessInfo.IsUnder13   := False;
+  AccessInfo.Required2FA := False;
   Http   := MakeHttp(Cookies);
   // Official launcher calls /game-auth2/v1/access with cookie-only auth (no Bearer).
   // Sending AToken Bearer here causes 401 when AToken is the wrong scope, which
@@ -563,6 +600,7 @@ begin
   Body := JsonBody(Format('{"productId":"%s"}', [ProductId]));
   try
     Resp   := Http.Post(BASE_URL + '/game-auth2/v1/access', Body);
+    AccessInfo.HttpStatus := Resp.StatusCode;
     SetLog := '';
     for H in Resp.Headers do
       if SameText(H.Name, 'Set-Cookie') then
@@ -582,6 +620,24 @@ begin
         Format('[Access] HTTP %d%s'#13#10'%s', [Resp.StatusCode, SetLog, Resp.ContentAsString]),
         TEncoding.UTF8);
     except end;
+
+    // Parse the access verdict. isPlayable=False => game down / under maintenance.
+    // We must NOT require HTTP 200 here: the launcher gates on the body flag.
+    if Resp.StatusCode = 200 then
+    begin
+      J := TJSONObject.ParseJSONValue(Resp.ContentAsString) as TJSONObject;
+      if J <> nil then
+      try
+        AccessInfo.IsPlayable  := J.GetValue<Boolean>('isPlayable',  False);
+        AccessInfo.IsDeveloper := J.GetValue<Boolean>('isDeveloper', False);
+        AccessInfo.IpBlocked   := J.GetValue<Boolean>('ipBlocked',   False);
+        AccessInfo.IsMinor     := J.GetValue<Boolean>('isMinor',     False);
+        AccessInfo.IsUnder13   := J.GetValue<Boolean>('isUnder13',   False);
+        AccessInfo.Required2FA := J.GetValue<Boolean>('required2FA', False);
+      finally
+        J.Free;
+      end;
+    end;
   finally
     Body.Free;
     Http.Free;

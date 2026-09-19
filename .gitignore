@@ -42,3 +42,12 @@ release/nxl3p_stub.exe
 # Runtime dependencies (tracked)
 !release/sqlite3.dll
 !release/WebView2Loader.dll
+
+# Local-only notes & logs (not published)
+AGENTS.md
+CLAUDE.md
+PLAN.md
+RE.md
+RUA_LINUX_PLAN.md
+*.log
+release/

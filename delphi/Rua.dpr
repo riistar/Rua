@@ -51,7 +51,13 @@ begin
 
   Application.Initialize;
   Application.MainFormOnTaskbar := True;
-  TStyleManager.TrySetStyle('Sky');
+  // Apply the saved theme BEFORE the main form is created, so no control ever
+  // paints with the default style. Falls back to Sky only if no theme is saved.
+  var ThemeFromCfg := ReadThemeFromConfig;
+  if ThemeFromCfg <> '' then
+    TStyleManager.TrySetStyle(ThemeFromCfg)
+  else
+    TStyleManager.TrySetStyle('Sky');
   Application.Title := 'Rua';
   Application.CreateForm(TFormMain, FormMain);
   Application.Run;

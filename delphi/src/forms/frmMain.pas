@@ -7,9 +7,9 @@ uses
   System.SysUtils, System.Classes, System.IOUtils, System.Types, System.SyncObjs,
   System.JSON, System.Generics.Collections, System.DateUtils, System.Math, IniFiles,
   Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Dialogs,
-  Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.ComCtrls, Vcl.Menus,
-  uProfiles, uGameLaunch, uNexonAPI, uDeviceId, Vcl.Imaging.pngimage,
-  System.ImageList, Vcl.ImgList;
+  Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.ComCtrls, Vcl.Menus, Vcl.Buttons,
+  uProfiles, uGameLaunch, uNexonAPI, uDeviceId, uNewsFeed, uNewsFeedCtl, Vcl.Imaging.pngimage,
+  System.ImageList, Vcl.ImgList, uHeaderPageControl, uIgnoreList;
 
 const
   SESSION_CACHE_SECS = 300; // re-check after 5 minutes max
@@ -43,21 +43,27 @@ type
     PopEdit:      TMenuItem;
     PopDelete:    TMenuItem;
     PnlRight:     TPanel;
-    BtnLaunch:    TButton;
-    BtnCheckUpdate:  TButton;
-    BtnPauseUpdate:  TButton;
     StatusBar:    TStatusBar;
-    Image1: TImage;
     Panel1: TPanel;
-    LblProgress: TLabel;
-    PrgUpdate: TProgressBar;
-    MemoLog: TMemo;
     ImageList1: TImageList;
     N1: TMenuItem;
     UpdateLogin: TMenuItem;
     Button1: TButton;
     ReLogin1: TMenuItem;
+    Panel2: TPanel;
+    BtnLaunch: TButton;
+    BtnCheckUpdate: TButton;
+    Panel3: TPanel;
+    LblProgress: TLabel;
+    PrgUpdate: TProgressBar;
+    PageControl1: TPageControl;
+    TabSheet1: TTabSheet;
+    NewsScroll: TScrollBox;
+    TabSheet2: TTabSheet;
+    MemoLog: TMemo;
+    Rua: TImage;
     procedure FormCreate(Sender: TObject);
+    procedure FormShow(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormClose(Sender: TObject; var Action: TCloseAction);
     procedure MenuAddProfileClick(Sender: TObject);
@@ -71,8 +77,7 @@ type
     procedure BtnRemoveProfileClick(Sender: TObject);
     procedure BtnLaunchClick(Sender: TObject);
     procedure BtnCheckUpdateClick(Sender: TObject);
-    procedure BtnCheckUpdateDropDownClick(Sender: TObject);
-    procedure BtnPauseUpdateClick(Sender: TObject);
+    procedure ToggleUpdatePause;
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
     procedure LvProfilesSelectItem(Sender: TObject; Item: TListItem;
       Selected: Boolean);
@@ -99,8 +104,20 @@ type
     FPauseEvent:      TEvent;
     FCancelDownload:  Boolean;
     FDownloadActive:  Boolean;
+    FUpdateAvailable: Boolean; // set by the hash-only auto check (skip-dir-scan)
+    FLastProgMs:      Int64;   // throttles progress UI updates (~5/sec)
+    FSessionStart:    TDateTime; // when the game client was launched (for playtime)
+    FSessionProfile:  string;   // profile used by the running session
+    FSessionTimer:    TTimer;   // live session-time ticker
     FCleanupOnExit:   Boolean;
     FInRefreshProfiles: Boolean; // suppress session check during auto-select
+    FNewsLoaded: Boolean;        // feed loaded once, from FormShow (after form is themed/drawn)
+    FNews:       TArray<TNewsItem>;
+    FNewsFeed:   TNewsFeed;       // rendered into NewsScroll at runtime (TNewsFeed is not DFM-streamable)
+    FHeaderControl: THeaderPageControl; // custom PageControl swapped in at runtime (not DFM-streamable)
+    FHeaderTop: Integer;
+    procedure SetupHeaderPageControl;
+    procedure HeaderPageResize(Sender: TObject);
     procedure RefreshProfiles;
     procedure Log(const Msg: string);
     procedure LogV(const Msg: string);
@@ -117,6 +134,7 @@ type
     procedure SetProfileIcon(const Profile: string; IconIndex: Integer);
     procedure CheckSessionCached(const Profile, Cookies: string);
     procedure StartupSessionCheck;
+    procedure LoadNews;
     procedure PromptReLogin(const Profile: string);
     procedure LaunchProfile(const Name: string);
     procedure RefreshTrayMenu;
@@ -124,6 +142,8 @@ type
     procedure TrayShowClick(Sender: TObject);
     procedure TrayIconDblClick(Sender: TObject);
     procedure GameExitHandler(Sender: TObject);
+    function  SessionTextFor(const Profile: string): string;
+    procedure SessionTimerTick(Sender: TObject);
     procedure WMSysCommand(var Msg: TMessage); message WM_SYSCOMMAND;
     procedure DoCheckAndUpdate(AutoMode: Boolean; ForceAll: Boolean = False; VerifyMode: Boolean = False);
     procedure MenuVerifyRepairClick(Sender: TObject);
@@ -136,13 +156,16 @@ type
 var
   FormMain: TFormMain;
 
+// Exposed for Rua.dpr — apply the saved theme before the main form is created.
+function ReadThemeFromConfig: string;
+
 implementation
 
 {$R *.dfm}
 {$R ..\..\tray_icon.res}
 
 uses
-  Vcl.FileCtrl, Vcl.Themes,
+  Vcl.FileCtrl, Vcl.Themes, Winapi.ShellAPI,
   frmLogin, frmLoginWebView, frmProfile, frmProfileEdit, frmSettings, frmFolderSelect,
   uBrowserCookies, uNxlPatcher, uCredStore;
 
@@ -249,6 +272,23 @@ begin
     'Rua\config.ini');
 end;
 
+function ReadThemeFromConfig: string;
+var
+  INI: TIniFile;
+begin
+  Result := '';
+  try
+    INI := TIniFile.Create(ConfigPath);
+    try
+      Result := INI.ReadString('UI', 'Theme', '');
+    finally
+      INI.Free;
+    end;
+  except
+    Result := '';
+  end;
+end;
+
 procedure TFormMain.LoadConfig;
 var
   INI: TIniFile;
@@ -315,7 +355,32 @@ end;
 procedure TFormMain.FormCreate(Sender: TObject);
 var
   SC: TListColumn;
+  EarlyTheme: string;
 begin
+  // Apply the saved Vcl theme FIRST so no control ever paints with the default
+  // (unthemed/white) style — DFM controls are created before FormCreate, and
+  // they lazily paint on Show, so setting the style here themes them correctly.
+  EarlyTheme := ReadThemeFromConfig;
+  if EarlyTheme <> '' then
+    TStyleManager.TrySetStyle(EarlyTheme);
+
+  // THeaderPageControl is created at runtime (it is not registered as a
+  // design-time component), so swap it in before anything touches PageControl1.
+  SetupHeaderPageControl;
+
+  // The swapped-in page control is added to PnlRight after Rua, which would
+  // otherwise paint over it. Keep Rua on top so it stays visible peeking
+  // above the tab strip.
+  Rua.BringToFront;
+
+  // TNewsFeed is a runtime component (not registered for the design-time IDE),
+  // so it's created here and fills the DFM NewsScroll box. Uses the latter's
+  // bounds — resize/drag NewsScroll in the designer to position the feed.
+  FNewsFeed           := TNewsFeed.Create(Self);
+  FNewsFeed.Parent    := NewsScroll;
+  FNewsFeed.Align     := alClient;
+  FNewsFeed.DoubleBuffered := True;
+
   FLauncher      := TGameLauncher.Create;
   FSessionCache  := TDictionary<string, TSessionInfo>.Create;
   FProductId     := DEFAULT_PRODUCT;
@@ -326,13 +391,21 @@ begin
 
   FLauncher.OnGameExit := GameExitHandler;
 
-  // Rebuild columns: status icon | Profile | UserNo | Last Used
+  // Live session-time ticker: updates the "Session" column each second while a
+  // game is running (stops when the client exits / no active session).
+  FSessionTimer            := TTimer.Create(Self);
+  FSessionTimer.Interval   := 1000;
+  FSessionTimer.Enabled    := False;
+  FSessionTimer.OnTimer    := SessionTimerTick;
+
+  // Rebuild columns: status icon | Profile | UserNo | Last Used | Session
   LvProfiles.SmallImages := ImageList1;
   LvProfiles.Columns.Clear;
   SC := LvProfiles.Columns.Add; SC.Caption := '';          SC.Width := 24;
-  SC := LvProfiles.Columns.Add; SC.Caption := 'Profile';   SC.Width := 110;
+  SC := LvProfiles.Columns.Add; SC.Caption := 'Profile';   SC.Width := 100;
   SC := LvProfiles.Columns.Add; SC.Caption := 'User No';   SC.Width := 0;
   SC := LvProfiles.Columns.Add; SC.Caption := 'Last Used'; SC.Width := 68;
+  SC := LvProfiles.Columns.Add; SC.Caption := 'Session';   SC.Width := 62;
 
   // Tray icon + menu
   var MI: TMenuItem;
@@ -369,14 +442,21 @@ begin
   MIVerify.OnClick     := MenuVerifyRepairClick;
   FUpdateMenu.Items.Add(MIVerify);
 
+  // Native split-button arrow: VCL renders the dropdown arrow and manages
+  // outside-click dismissal.
+  BtnCheckUpdate.DropDownMenu := FUpdateMenu;
+
   LoadExternalStyles;
+  //Image1.Visible := False;        // news feed (NewsScroll) replaces the hero art
   RefreshProfiles;   // calls RefreshTrayMenu too
   StartupSessionCheck;
   AutoDetectGame;
-  LoadConfig;
+  LoadConfig;        // applies the saved Vcl theme
   SetAutoStart(FAutoStart);
   if FAutoCheck then
     DoCheckAndUpdate(True);
+  // LoadNews is deferred to FormShow — the feed needs the form drawn + themed
+  // before it samples the panel background (avoids a white/unthemed flash).
   if FStartMinimized then
   begin
     Hide;
@@ -386,11 +466,84 @@ begin
   UpdateButtons;
 end;
 
+procedure TFormMain.SetupHeaderPageControl;
+var
+  OldPC: TPageControl;
+  NewPC: THeaderPageControl;
+  ActiveIdx: Integer;
+begin
+  OldPC := PageControl1;
+  if OldPC is THeaderPageControl then
+  begin
+    FHeaderControl := THeaderPageControl(OldPC);
+    Exit;
+  end;
+
+  ActiveIdx := OldPC.ActivePageIndex;
+  NewPC := THeaderPageControl.Create(PnlRight);
+  NewPC.Parent := PnlRight;
+  NewPC.Align := alNone;
+  NewPC.SetBounds(OldPC.Left, OldPC.Top, OldPC.Width, OldPC.Height);
+  NewPC.TabOrder := OldPC.TabOrder;
+  NewPC.Font := OldPC.Font;
+  NewPC.ParentFont := OldPC.ParentFont;
+  NewPC.DoubleBuffered := True;
+
+  // Adopt the tab sheets (TabSheet1/2 and their children) in order.
+  while OldPC.PageCount > 0 do
+    OldPC.Pages[0].PageControl := NewPC;
+
+  if ActiveIdx >= 0 then
+    NewPC.ActivePageIndex := ActiveIdx;
+
+  // Detach and free the stock control; our field now points at the header one.
+  OldPC.Parent := nil;
+  OldPC.Free;
+  PageControl1   := NewPC;
+  FHeaderControl := NewPC;
+
+  // Header configuration. HeaderHeight grows the tab-strip band without growing
+  // the tab captions. Set a picture on HeaderImage to draw an aligned background
+  // image behind the tabs (see uHeaderPageControl).
+  NewPC.HeaderHeight := 40;
+
+  // The buttons (Panel1, alBottom) re-dock to the bottom edge on resize, so keep
+  // the header control filling the page area above it. (We use alNone + explicit
+  // bounds because a swapped-in alBottom sibling's dock slot is not predictable.)
+  FHeaderTop   := OldPC.Top;
+  PnlRight.OnResize := HeaderPageResize;
+  HeaderPageResize(PnlRight);
+end;
+
+procedure TFormMain.HeaderPageResize(Sender: TObject);
+begin
+  if FHeaderControl = nil then
+    Exit;
+  FHeaderControl.Left   := PnlRight.Padding.Left;
+  FHeaderControl.Top    := FHeaderTop;
+  FHeaderControl.Width  := PnlRight.ClientWidth - PnlRight.Padding.Left - PnlRight.Padding.Right;
+  FHeaderControl.Height := Panel1.Top - FHeaderControl.Top;
+  Rua.BringToFront;
+end;
+
+procedure TFormMain.FormShow(Sender: TObject);
+begin
+  // Load the news feed the first time the form is shown — by now the form is
+  // drawn and the active VclStyle is applied, so the feed samples the real
+  // themed background instead of flashing white/unthemed during construction.
+  if not FNewsLoaded then
+  begin
+    FNewsLoaded := True;
+    LoadNews;
+  end;
+end;
+
 procedure TFormMain.FormDestroy(Sender: TObject);
 begin
   FLauncher.Free;
   FSessionCache.Free;
   FPauseEvent.Free;
+  // NewsScroll (TNewsFeed) owns its cards; Image1 + NewsScroll freed by Self.
   // FTrayIcon + FTrayMenu owned by Self — freed automatically
 end;
 
@@ -476,6 +629,8 @@ begin
         Item.SubItems.Add(DateTimeToStr(P.LastUsed))
       else
         Item.SubItems.Add('Never'); // col 3: Last Used
+      // col 4: Session time (live; updated by the session timer)
+      Item.SubItems.Add(SessionTextFor(P.Name));
     end;
   finally
     LvProfiles.Items.EndUpdate;
@@ -484,6 +639,7 @@ begin
   LvProfiles.Columns[1].Width := -2; // Profile: LVSCW_AUTOSIZE_USEHEADER
   LvProfiles.Columns[2].Width := 0;  // UserNo — hidden, kept in data
   LvProfiles.Columns[3].Width := -2; // Last Used: LVSCW_AUTOSIZE_USEHEADER
+  LvProfiles.Columns[4].Width := 62; // Session
 
   // Auto-select last used profile (or top item) silently
   FInRefreshProfiles := True;
@@ -787,16 +943,11 @@ end;
 
 procedure TFormMain.BtnCheckUpdateClick(Sender: TObject);
 begin
-  DoCheckAndUpdate(False);
-end;
-
-procedure TFormMain.BtnCheckUpdateDropDownClick(Sender: TObject);
-var
-  P: TPoint;
-begin
-  if FUpdateMenu = nil then Exit;
-  P := BtnCheckUpdate.ClientToScreen(Point(0, BtnCheckUpdate.Height));
-  FUpdateMenu.Popup(P.X, P.Y);
+  // Single button: caption="Pause"/"Resume" → toggle download; else run update.
+  if (BtnCheckUpdate.Caption = 'Pause') or (BtnCheckUpdate.Caption = 'Resume') then
+    ToggleUpdatePause
+  else
+    DoCheckAndUpdate(False);
 end;
 
 procedure TFormMain.MenuVerifyRepairClick(Sender: TObject);
@@ -812,17 +963,17 @@ end;
 
 
 
-procedure TFormMain.BtnPauseUpdateClick(Sender: TObject);
+procedure TFormMain.ToggleUpdatePause;
 const
   PAUSE_TAG = '[PAUSED] ';
 var
   Sep: Integer;
   Cap: string;
 begin
-  if BtnPauseUpdate.Caption = 'Pause' then
+  if BtnCheckUpdate.Caption = 'Pause' then
   begin
     FPauseEvent.ResetEvent;
-    BtnPauseUpdate.Caption := 'Resume';
+    BtnCheckUpdate.Caption := 'Resume';
     Cap := LblProgress.Caption;
     Sep := Pos(#13#10, Cap);
     if Sep > 0 then
@@ -834,7 +985,7 @@ begin
   else
   begin
     FPauseEvent.SetEvent;
-    BtnPauseUpdate.Caption := 'Pause';
+    BtnCheckUpdate.Caption := 'Pause';
     Cap := LblProgress.Caption;
     if Copy(Cap, 1, Length(PAUSE_TAG)) = PAUSE_TAG then
       LblProgress.Caption := Copy(Cap, Length(PAUSE_TAG) + 1, MaxInt);
@@ -969,9 +1120,14 @@ begin
 
   FCancelDownload := False;
   FDownloadActive := True;
+  FUpdateAvailable := False;
   FPauseEvent.SetEvent; // ensure not paused from a previous run
-  BtnCheckUpdate.Enabled := False;
+  // Keep the update button ENABLED so Pause/Resume is clickable throughout
+  // (scan + download). Launch is disabled during the operation.
+  BtnCheckUpdate.Enabled := True;
   BtnLaunch.Enabled      := False;
+  // Pause is available throughout (scan + download) — clicking toggles pause/resume.
+  BtnCheckUpdate.Caption := 'Pause';
   LblProgress.Caption    := 'Checking...';
   PrgUpdate.Max          := Max(1, Length(InstRoots));
   PrgUpdate.Position     := 0;
@@ -993,12 +1149,11 @@ begin
   var
     RemoteHash, LocalHash, HashFile, InstRoot, Error: string;
     SkipFinalCleanup: Boolean;
-    TotalScanCount, CheckIdx: Integer;
+    CheckIdx: Integer;
     UpdateRoots:      TArray<string>;
   begin
     Error            := '';
     SkipFinalCleanup := False;
-    TotalScanCount   := 0;
     CheckIdx         := 0;
     UpdateRoots      := [];
     try
@@ -1014,8 +1169,21 @@ begin
             begin TThread.Queue(nil, procedure begin Log(Msg); end); end;
           if not TryRefreshCookies(Profile, Cookies, LogFn) then
           begin
-            TThread.Queue(nil, procedure begin Log('Could not refresh session — re-login required.'); end);
-            raise;
+            TThread.Queue(nil, procedure begin Log('Could not refresh session — prompting re-login...'); end);
+            var ReLoginOK := False;
+            TThread.Synchronize(nil, procedure
+            var
+              ReLoginStatus: Integer;
+            begin
+              PromptReLogin(Profile);
+              ReLoginOK := CheckSessionValid(LoadCookies(Profile), ReLoginStatus);
+            end);
+            if not ReLoginOK then
+            begin
+              TThread.Queue(nil, procedure begin Log('Re-login required — update cancelled.'); end);
+              raise;
+            end;
+            Cookies := LoadCookies(Profile);
           end;
           RemoteHash := FetchManifestHash(Cookies, ProductId);
         end;
@@ -1066,15 +1234,16 @@ begin
 
         if AutoMode and not ShouldAutoUpdate then
         begin
-          // Scan manifest to confirm files actually differ (hash can change on
-          // metadata-only Nexon manifest updates). If 0 files → already up to date
-          // and RunPatcher updates the stored hash. If files found → show button.
-          var ScanCount: Integer := 0;
-          var ScanLog: TPatchLog := procedure(const Msg: string)
-            begin TThread.Queue(nil, procedure begin LogV(Msg); end); end;
-          RunPatcher(RemoteHash, InstRoot, ProductId, ScanLog,
-            nil, '', ForceAll, nil, nil, True, @ScanCount);
-          TotalScanCount := TotalScanCount + ScanCount;
+          // AUTO-CHECK (startup): hash-only gate. The manifest hash is the version
+          // token; if it differs we're in UpdateRoots already. No dir byte-scan —
+          // that would hammer CPU/disk on every launch for metadata-only bumps.
+          // Just surface that an update is pending; the user patches on demand.
+          TThread.Queue(nil, procedure
+          begin
+            Log(InstRoot + ': update available — click "Update Game" to patch.');
+            BtnCheckUpdate.Caption := 'Update Game';
+          end);
+          FUpdateAvailable := True;
         end
         else
         begin
@@ -1084,11 +1253,10 @@ begin
             TThread.Queue(nil, procedure
             begin
               Log('Verifying: ' + R);
-              LblProgress.Caption    := 'Verifying files...';
-              PrgUpdate.Position     := 0;
-              BtnCheckUpdate.Visible := False;
-              BtnPauseUpdate.Caption := 'Pause';
-              BtnPauseUpdate.Visible := True;
+              LblProgress.Caption := 'Verifying files...';
+              PrgUpdate.Position  := 0;
+              // Pause/resume lives on the single update button (stays visible).
+              BtnCheckUpdate.Caption := 'Pause';
             end);
 
             RunPatcher(RemoteHash, R, ProductId,
@@ -1100,21 +1268,29 @@ begin
               var
                 ElapsedSec, ETASec: Double;
                 ElapsedStr, ETAStr, Cap: string;
+                NowMs: Int64;
               begin
+                // Throttle UI updates (label + bar) to ~5/sec so fast checks
+                // don't flood the main thread and starve the repaint.
+                NowMs := TThread.GetTickCount64;
+                if (NowMs - FLastProgMs < 200) and (Current < Total) then Exit;
+                FLastProgMs := NowMs;
+
                 var Elapsed := Now - StartTime;
                 ElapsedSec  := Elapsed * 86400.0;
                 ElapsedStr  := FormatDateTime('hh:nn:ss', Elapsed);
-                if Current > 0 then
+                if (Current > 0) and (Total > 0) then
                 begin
                   ETASec := ElapsedSec * (Total - Current) / Current;
                   ETAStr := FormatDateTime('hh:nn:ss', ETASec / 86400.0);
                 end
                 else
                   ETAStr := '--:--:--';
-                var Pct := (Current * 100) div Total;
-                Cap := Format('[%s / ETA %s]  (%d%%)  (%d / %d)',
-                              [ElapsedStr, ETAStr, Pct, Current, Total])
-                    + #13#10 + FileName;
+                var Pct := 0;
+                if Total > 0 then Pct := (Current * 100) div Total;
+                // Compact caption (label wraps up to ~2 lines); filename last.
+                Cap := Format('%d%%  [%s / ETA %s]  %d / %d — %s',
+                              [Pct, ElapsedStr, ETAStr, Current, Total, FileName]);
                 TThread.Queue(nil, procedure
                 begin
                   LblProgress.Caption := Cap;
@@ -1124,7 +1300,7 @@ begin
               end,
               '', ForceAll,
               function: Boolean begin Result := FCancelDownload; end,
-              FPauseEvent);
+              FPauseEvent, False, nil, LoadIgnorePatterns);
 
             TThread.Queue(nil, procedure
             begin
@@ -1143,12 +1319,9 @@ begin
       FDownloadActive        := False;
       LblProgress.Caption    := 'Ready...';
       PrgUpdate.Position     := 0;
-      BtnPauseUpdate.Visible := False;
-      BtnCheckUpdate.Visible := True;
       BtnCheckUpdate.Enabled := True;
-      if TotalScanCount > 0 then
+      if FUpdateAvailable then
       begin
-        Log(Format('Update available (%d files). Click "Update Game" to patch.', [TotalScanCount]));
         BtnCheckUpdate.Caption := 'Update Game';
       end
       else
@@ -1215,12 +1388,63 @@ begin
   LaunchProfile(TMenuItem(Sender).Hint); // Hint holds real name; Caption has && escaping
 end;
 
-procedure TFormMain.GameExitHandler(Sender: TObject);
+// Session time for a profile: HH:MM:SS if it's the currently-running session, else ''.
+function TFormMain.SessionTextFor(const Profile: string): string;
 begin
-  Log('Game exited.');
-  StatusBar.SimpleText := 'Game exited.';
+  if (FSessionStart > 0) and (SameText(Profile, FSessionProfile)) then
+    Result := FormatDateTime('hh:nn:ss', Now - FSessionStart)
+  else
+    Result := '';
+end;
+
+// Live ticker: repaint the running profile's Session cell every second.
+procedure TFormMain.SessionTimerTick(Sender: TObject);
+var
+  I: Integer;
+begin
+  if (FSessionStart = 0) or (FSessionProfile = '') then
+  begin
+    FSessionTimer.Enabled := False;
+    Exit;
+  end;
+  LvProfiles.Items.BeginUpdate;
+  try
+    for I := 0 to LvProfiles.Items.Count - 1 do
+      if SameText(LvProfiles.Items[I].SubItems[0], FSessionProfile) then
+      begin
+        LvProfiles.Items[I].SubItems[3] := FormatDateTime('hh:nn:ss', Now - FSessionStart);
+        Break;
+      end;
+  finally
+    LvProfiles.Items.EndUpdate;
+  end;
+end;
+
+procedure TFormMain.GameExitHandler(Sender: TObject);
+var
+  Elapsed: TDateTime;
+  Msg: string;
+begin
+  // Report session playtime (launch → exit) for the profile that was running.
+  if FSessionStart > 0 then
+  begin
+    Elapsed := Now - FSessionStart;
+    Msg := Format('Game exited. Session time: %s (%s).',
+      [FormatDateTime('hh:nn:ss', Elapsed), FSessionProfile]);
+    Log(Msg);
+    StatusBar.SimpleText := 'Session: ' + FormatDateTime('hh:nn:ss', Elapsed);
+    FSessionStart   := 0;
+    FSessionProfile := '';
+    FSessionTimer.Enabled := False;
+  end
+  else
+  begin
+    Log('Game exited.');
+    StatusBar.SimpleText := 'Game exited.';
+  end;
   BtnLaunch.Enabled := True;
   UpdateButtons;
+  LvProfiles.Repaint; // clear the Session cell for the ended profile
   // Restore window if it was minimized to tray on game launch
   if FTrayOnLaunch and not Visible then
   begin
@@ -1300,8 +1524,19 @@ begin
       SaveConfig;
     end;
     Log('Game launched: ' + ExtractFileName(GamePath));
+    // Start the session timer — display elapsed time until the client exits.
+    FSessionStart   := Now;
+    FSessionProfile := Name;
+    FSessionTimer.Enabled := True;
     // BtnLaunch stays disabled until GameExitHandler fires
   except
+    on E: EGamePlayableFailed do
+    begin
+      Log('Playable check failed: ' + E.Message);
+      ShowMessage(E.Message);
+      BtnLaunch.Enabled := True;
+      StatusBar.SimpleText := '';
+    end;
     on E: Exception do
     begin
       Log('Error: ' + E.Message);
@@ -1371,6 +1606,49 @@ begin
         end);
       end)(Profiles[I].Name, Profiles[I].DeviceId);
     end;
+  end).Start;
+end;
+
+procedure TFormMain.LoadNews;
+const
+  // Give the form time to fully draw and apply its theme before we touch the
+  // feed. Prevents a white/unthemed flash while the news list is being built.
+  NEWS_WARMUP_MS = 1000;
+begin
+  TThread.CreateAnonymousThread(procedure
+  var
+    Cached, News: TArray<TNewsItem>;
+  begin
+    // Let the UI settle (theme applied, first paint done) before any news work.
+    Sleep(NEWS_WARMUP_MS);
+
+    // Serve any cached news immediately (fast, offline) so the feed isn't blank.
+    Cached := LoadNewsCache(FProductId);
+    if Length(Cached) > 0 then
+      TThread.Queue(nil, procedure
+      begin
+        FNews := Cached;
+        FNewsFeed.SetNews(FNews);
+      end);
+
+    // Skip the network refresh if the cache is fresh enough (< 30 min old).
+    if not NewsCacheRefreshDue(Cached, FProductId, 30) then Exit;
+
+    try
+      News := FetchNews(FProductId);
+    except
+      News := nil;
+    end;
+    TThread.Queue(nil, procedure
+    begin
+      // Only replace what we rendered if a newer/complete list came back.
+      if Length(News) > 0 then
+      begin
+        FNews := News;
+        FNewsFeed.SetNews(FNews);
+        SaveNewsCache(FProductId, News);
+      end;
+    end);
   end).Start;
 end;
 

@@ -18,7 +18,7 @@ uses
   System.SysUtils, System.Classes, System.IOUtils, System.JSON,
   System.NetEncoding, System.Net.HttpClient, System.ZLib,
   System.DateUtils, System.Threading, System.SyncObjs,
-  System.Generics.Collections, System.Hash, System.Math;
+  System.Generics.Collections, System.Hash, System.Math, uIgnoreList;
 
 type
   TPatchLog      = reference to procedure(const Msg: string);
@@ -34,6 +34,8 @@ type
 // ForceAll      : if True, skip all checks and re-download everything
 // ScanOnly=True: download manifest and scan, but do NOT download files.
 // NeedCount receives the number of files that would need updating (nil = ignore).
+// IgnorePatterns: relative paths/wildcards (see uIgnoreList) always excluded --
+// applies before ForceAll/verify, so ignored files are never touched by any mode.
 procedure RunPatcher(const ManifestHash, InstallRoot: string;
   ProductId: Integer; const Log: TPatchLog;
   const Progress: TPatchProgress = nil;
@@ -41,7 +43,8 @@ procedure RunPatcher(const ManifestHash, InstallRoot: string;
   const ShouldCancel: TFunc<Boolean> = nil;
   PauseEvent: TEvent = nil;
   ScanOnly: Boolean = False;
-  NeedCount: PInteger = nil);
+  NeedCount: PInteger = nil;
+  const IgnorePatterns: TArray<string> = nil);
 function LoadCachedManifest(const Path: string): string;
 
 implementation
@@ -49,10 +52,50 @@ implementation
 const
   MANIFEST_BASE = 'http://download2.nexon.net/Game/nxl/games/10200/';
   DOWNLOAD_BASE = 'https://download2.nexon.net/Game/nxl/games/10200/10200/';
+  // Global cap on simultaneous HTTP requests (manifest + all file parts across
+  // all files being patched). Previously unbounded per-file part fan-out
+  // combined with MAX_DL concurrent files could open 100+ connections at once,
+  // which self-throttles against the CDN. This also backs a reusable
+  // THTTPClient pool so parts reuse keep-alive connections instead of paying
+  // a fresh TCP+TLS handshake per part.
+  MAX_CONCURRENT_HTTP = 16;
+
+var
+  GHttpPool:     TList<THTTPClient>;
+  GHttpPoolLock: TCriticalSection;
+  GHttpSem:      TSemaphore;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function CheckoutHttpClient: THTTPClient;
+begin
+  GHttpSem.Acquire;
+  GHttpPoolLock.Enter;
+  try
+    if GHttpPool.Count > 0 then
+    begin
+      Result := GHttpPool[GHttpPool.Count - 1];
+      GHttpPool.Delete(GHttpPool.Count - 1);
+    end
+    else
+      Result := THTTPClient.Create;
+  finally
+    GHttpPoolLock.Leave;
+  end;
+end;
+
+procedure CheckinHttpClient(Http: THTTPClient);
+begin
+  GHttpPoolLock.Enter;
+  try
+    GHttpPool.Add(Http);
+  finally
+    GHttpPoolLock.Leave;
+  end;
+  GHttpSem.Release;
+end;
 
 function HttpGetBytes(const URL: string): TBytes;
 var
@@ -60,7 +103,7 @@ var
   Resp: IHTTPResponse;
   MS:   TMemoryStream;
 begin
-  Http := THTTPClient.Create;
+  Http := CheckoutHttpClient;
   MS   := TMemoryStream.Create;
   try
     Http.CookieManager := nil;
@@ -76,7 +119,7 @@ begin
     end;
   finally
     MS.Free;
-    Http.Free;
+    CheckinHttpClient(Http);
   end;
 end;
 
@@ -385,14 +428,18 @@ begin
   if E.IsDir then Exit;
   FullPath := TPath.Combine(InstRoot, E.Path);
   if not TFile.Exists(FullPath) then begin Log('  missing: ' + E.Path); Exit(True); end;
-  // Try hash verification first; fall back to size check
-  if VerifyFileByHash(E, FullPath, Log) then Exit(False);
+
+  // GATE: size-only change detection. Re-compressing every part to SHA1-verify
+  // (VerifyFileByHash) hammers CPU/disk on every scan — Mabinogi's manifest
+  // `fsize` is the authoritative "does this file need updating" signal.
+  // Recompress-verify is only worth it for a targeted Verify/Repair, not the
+  // routine startup check. If sizes match, consider the file up to date.
   if GetLocalFileSize(FullPath) <> E.FSize then
   begin
     Log('  size mismatch: ' + E.Path);
     Exit(True);
   end;
-  Log('  hash/size OK: ' + E.Path);
+  Log('  size OK: ' + E.Path);
 end;
 
 // ---------------------------------------------------------------------------
@@ -400,20 +447,23 @@ end;
 // ---------------------------------------------------------------------------
 
 procedure PatchFile(const E: TFileEntry; const InstRoot: string; const Log: TPatchLog);
+const
+  MAX_PARTS = 4;   // bound per-file part concurrency (total ≈ MAX_DL × MAX_PARTS)
 var
   FinalPath, TempPath, Dir: string;
   Tasks:     TArray<ITask>;
   FS:        TFileStream;
   I:         Integer;
+  PartSem:   TSemaphore;
 
   type
     TPartResult = record
       Decompressed: TBytes;
-      Compressed:   TBytes;
     end;
   var PartResults: TArray<TPartResult>;
 
-  // Idx + PartName passed by value — each call gets its own captures.
+  // Fetch + decompress a single part, throttled by PartSem. Idx/PartName by
+  // value → each task gets its own captures.
   procedure FetchPart(Idx: Integer; const PartName: string);
   begin
     Tasks[Idx] := TTask.Run(procedure
@@ -421,38 +471,15 @@ var
       URL:      string;
       RawBytes: TBytes;
     begin
-      URL := DOWNLOAD_BASE + Copy(PartName, 1, 2) + '/' + PartName;
-      RawBytes := HttpGetBytes(URL);
-      PartResults[Idx].Compressed   := RawBytes;
-      PartResults[Idx].Decompressed := ZlibDecomp(RawBytes);
-    end);
-  end;
-
-  // Verify SHA1 of compressed bytes against manifest objects[] hash.
-  // Log confirmation if SHA1(compressed) matches — this confirms the algorithm.
-  procedure VerifyPartHash;
-  var
-    H: THashSHA1;
-    Hex: string;
-    AllMatch: Boolean;
-  begin
-    AllMatch := True;
-    for var J := 0 to High(E.Parts) do
-    begin
-      if Length(PartResults[J].Compressed) = 0 then Continue;
-      H := THashSHA1.Create;
-      H.Update(PartResults[J].Compressed, Length(PartResults[J].Compressed));
-      Hex := H.HashAsString;
-      if SameText(Hex, E.Parts[J].Name) then
-        Log('    part[' + IntToStr(J) + '] hash OK')
-      else
-      begin
-        Log('    part[' + IntToStr(J) + '] hash MISMATCH: got=' + Hex + ' expected=' + E.Parts[J].Name);
-        AllMatch := False;
+      PartSem.Acquire;
+      try
+        URL := DOWNLOAD_BASE + Copy(PartName, 1, 2) + '/' + PartName;
+        RawBytes := HttpGetBytes(URL);
+        PartResults[Idx].Decompressed := ZlibDecomp(RawBytes);
+      finally
+        PartSem.Release;
       end;
-    end;
-    if AllMatch then
-      Log('    SHA1(compressed) = objects[] — algorithm confirmed');
+    end);
   end;
 
 begin
@@ -464,7 +491,7 @@ begin
 
   SetLength(PartResults, Length(E.Parts));
   SetLength(Tasks,       Length(E.Parts));
-
+  PartSem := TSemaphore.Create(nil, MAX_PARTS, MAX_PARTS, '');
   try
     for I := 0 to High(E.Parts) do
       FetchPart(I, E.Parts[I].Name);
@@ -480,8 +507,6 @@ begin
           raise;
       end;
     end;
-
-    VerifyPartHash;
 
     FS := TFileStream.Create(TempPath, fmCreate);
     try
@@ -504,6 +529,7 @@ begin
       try TFile.Delete(TempPath); except end;
     raise;
   end;
+  PartSem.Free;
 end;
 
 // ---------------------------------------------------------------------------
@@ -545,7 +571,8 @@ procedure RunPatcher(const ManifestHash, InstallRoot: string;
   const ShouldCancel: TFunc<Boolean> = nil;
   PauseEvent: TEvent = nil;
   ScanOnly: Boolean = False;
-  NeedCount: PInteger = nil);
+  NeedCount: PInteger = nil;
+  const IgnorePatterns: TArray<string> = nil);
 const
   MAX_DL = 8;
 var
@@ -632,6 +659,7 @@ begin
   var Seen := TDictionary<string, Boolean>.Create;
   var Candidates: TArray<TFileEntry>;
   var TotalFiles := 0;
+  var IgnoredN := 0;
   try
     // First pass: collect unique non-dir entries and create dirs
     for E in All do
@@ -645,6 +673,13 @@ begin
       var Key := E.Path.ToLower;
       if Seen.ContainsKey(Key) then Continue;
       Seen.Add(Key, True);
+      // Ignore list wins over every mode (normal check, verify/repair,
+      // force-all re-download) -- the file is treated as untouchable.
+      if IsIgnored(E.Path, IgnorePatterns) then
+      begin
+        Inc(IgnoredN);
+        Continue;
+      end;
       Candidates := Candidates + [E];
       Inc(TotalFiles);
     end;
@@ -652,6 +687,8 @@ begin
     Seen.Free;
     OldDict.Free;
   end;
+  if IgnoredN > 0 then
+    Log(Format('  %d file(s) skipped (ignore list)', [IgnoredN]));
 
   // Parallel verify: process files concurrently with semaphore
   var ScanLock := TCriticalSection.Create;
@@ -750,6 +787,12 @@ begin
     Sem.Free;
   end;
 
+  if Assigned(ShouldCancel) and ShouldCancel() then
+  begin
+    Log('Cancelled — hash not updated, will resume on next check.');
+    Exit;
+  end;
+
   // Update local hash file so Check Update sees the new state
   try
     HashFile := TPath.Combine(InstallRoot,
@@ -773,5 +816,17 @@ begin
 
   Log('Patch complete.');
 end;
+
+initialization
+  GHttpPool     := TList<THTTPClient>.Create;
+  GHttpPoolLock := TCriticalSection.Create;
+  GHttpSem      := TSemaphore.Create(nil, MAX_CONCURRENT_HTTP, MAX_CONCURRENT_HTTP, '');
+
+finalization
+  for var C in GHttpPool do
+    C.Free;
+  GHttpPool.Free;
+  GHttpPoolLock.Free;
+  GHttpSem.Free;
 
 end.

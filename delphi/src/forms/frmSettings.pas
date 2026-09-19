@@ -6,7 +6,7 @@ uses
   Winapi.Windows, System.SysUtils, System.Classes, System.IOUtils,
   Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Dialogs,
   Vcl.StdCtrls, Vcl.ExtCtrls,
-  Vcl.Themes;
+  Vcl.Themes, uIgnoreList;
 
 type
   TFormSettings = class(TForm)
@@ -24,6 +24,8 @@ type
     ChkTrayOnLaunch: TCheckBox;
     ChkRememberLastProfile: TCheckBox;
     ChkSortAlpha: TCheckBox;
+    LblIgnore:      TLabel;
+    MemoIgnore:     TMemo;
     PnlBottom:      TPanel;
     BtnOK:          TButton;
     BtnCancel:      TButton;
@@ -80,6 +82,7 @@ begin
     F.ChkTrayOnLaunch.Checked  := TrayOnLaunch;
     F.ChkRememberLastProfile.Checked := RememberLastProfile;
     F.ChkSortAlpha.Checked     := SortAlpha;
+    F.MemoIgnore.Lines.Text    := string.Join(sLineBreak, LoadIgnorePatterns);
 
     var Idx := F.CmbTheme.Items.IndexOf(Theme);
     if Idx >= 0 then F.CmbTheme.ItemIndex := Idx;
@@ -98,6 +101,7 @@ begin
       SortAlpha     := F.ChkSortAlpha.Checked;
       if F.CmbTheme.ItemIndex >= 0 then
         Theme := F.CmbTheme.Items[F.CmbTheme.ItemIndex];
+      SaveIgnorePatterns(F.MemoIgnore.Lines.ToStringArray);
     end
     else
       TStyleManager.TrySetStyle(OrigTheme);

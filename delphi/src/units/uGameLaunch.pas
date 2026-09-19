@@ -175,6 +175,7 @@ var
   SI: TStartupInfo;
   PI: TProcessInformation;
   PlayableStatus: Integer;
+  AccessInfo: TAccessInfo;
   SEI: TShellExecuteInfo;
   ShimReadyEv: THandle;
 begin
@@ -193,8 +194,17 @@ begin
     LaunchLog('FetchAccount: no new cookies')
   else
     LaunchLog('FetchAccount: Set-Cookie merged');
-  AuthCookies := FetchAccess(AuthCookies, PidStr);
-  LaunchLog('FetchAccess: OK');
+  AuthCookies := FetchAccess(AuthCookies, PidStr, AccessInfo);
+  LaunchLog('FetchAccess: HTTP=' + IntToStr(AccessInfo.HttpStatus) + ' isPlayable=' +
+    BoolToStr(AccessInfo.IsPlayable, True));
+  if AccessInfo.HttpStatus = 401 then
+    raise ETicketError.Create('Session expired (401). Re-login and try again.')
+  else if AccessInfo.IpBlocked then
+    raise EGamePlayableFailed.Create(
+      'Access blocked from your region/IP. The official launcher denies this game to your location.')
+  else if not AccessInfo.IsPlayable then
+    raise EGamePlayableFailed.Create(
+      'Mabinogi is currently unavailable (under maintenance or not yet open). Please try again later.');
 
   PlayableStatus := 0;
   if not CheckPlayable(AuthCookies, PidStr, PlayableStatus) then

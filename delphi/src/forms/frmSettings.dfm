@@ -3,7 +3,7 @@ object FormSettings: TFormSettings
   Top = 0
   BorderStyle = bsDialog
   Caption = 'Settings'
-  ClientHeight = 280
+  ClientHeight = 390
   ClientWidth = 450
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
@@ -130,6 +130,22 @@ object FormSettings: TFormSettings
     Height = 19
     Caption = 'Sort profiles &A-Z'
     TabOrder = 11
+  end
+  object LblIgnore: TLabel
+    Left = 12
+    Top = 245
+    Width = 340
+    Height = 15
+    Caption = 'Ignore during update (one path or wildcard per line):'
+    FocusControl = MemoIgnore
+  end
+  object MemoIgnore: TMemo
+    Left = 12
+    Top = 264
+    Width = 426
+    Height = 100
+    ScrollBars = ssVertical
+    TabOrder = 12
   end
   object PnlBottom: TPanel
     Left = 0

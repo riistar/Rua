@@ -6,13 +6,15 @@ uses
   System.SysUtils, System.Types,
   Winapi.Windows,
   Vcl.Forms, Vcl.Controls, Vcl.StdCtrls, Vcl.CheckLst,
-  Vcl.ExtCtrls, Vcl.Dialogs;
+  Vcl.ExtCtrls, Vcl.Dialogs, uIgnoreList;
 
 type
   TFormFolderSelect = class(TForm)
   private
-    FLabel:     TLabel;
-    FList:      TCheckListBox;
+    FLabel:      TLabel;
+    FList:       TCheckListBox;
+    FLblIgnore:  TLabel;
+    FMemoIgnore: TMemo;
     FBtnAll:    TButton;
     FBtnNone:   TButton;
     FBtnRepair: TButton;
@@ -55,7 +57,7 @@ begin
     F.BorderStyle  := bsDialog;
     F.Position     := poScreenCenter;
     F.Width        := 520;
-    F.Height       := 300;
+    F.Height       := 400;
     F.Font.Name    := 'Segoe UI';
     F.Font.Size    := 9;
     F.KeyPreview   := True;
@@ -79,11 +81,26 @@ begin
       F.FList.Checked[Idx] := True;
     end;
 
+    F.FLblIgnore            := TLabel.Create(F);
+    F.FLblIgnore.Parent     := F;
+    F.FLblIgnore.Left       := 12;
+    F.FLblIgnore.Top        := 182;
+    F.FLblIgnore.Caption    := 'Ignore during update (one path or wildcard per line):';
+
+    F.FMemoIgnore           := TMemo.Create(F);
+    F.FMemoIgnore.Parent    := F;
+    F.FMemoIgnore.Left      := 12;
+    F.FMemoIgnore.Top       := 201;
+    F.FMemoIgnore.Width     := F.ClientWidth - 24;
+    F.FMemoIgnore.Height    := 70;
+    F.FMemoIgnore.ScrollBars := ssVertical;
+    F.FMemoIgnore.Lines.Text := string.Join(sLineBreak, LoadIgnorePatterns);
+
     F.FBtnAll            := TButton.Create(F);
     F.FBtnAll.Parent     := F;
     F.FBtnAll.Caption    := 'All';
     F.FBtnAll.Left       := 12;
-    F.FBtnAll.Top        := 185;
+    F.FBtnAll.Top        := 281;
     F.FBtnAll.Width      := 60;
     F.FBtnAll.OnClick    := F.BtnAllClick;
 
@@ -91,7 +108,7 @@ begin
     F.FBtnNone.Parent    := F;
     F.FBtnNone.Caption   := 'None';
     F.FBtnNone.Left      := 78;
-    F.FBtnNone.Top       := 185;
+    F.FBtnNone.Top       := 281;
     F.FBtnNone.Width     := 60;
     F.FBtnNone.OnClick   := F.BtnNoneClick;
 
@@ -99,7 +116,7 @@ begin
     F.FBtnRepair.Parent  := F;
     F.FBtnRepair.Caption := 'Repair Bad Files';
     F.FBtnRepair.Left    := 160;
-    F.FBtnRepair.Top     := 185;
+    F.FBtnRepair.Top     := 281;
     F.FBtnRepair.Width   := 130;
     F.FBtnRepair.ModalResult := mrYes;
 
@@ -107,7 +124,7 @@ begin
     F.FBtnForce.Parent   := F;
     F.FBtnForce.Caption  := 'Re-download All';
     F.FBtnForce.Left     := 300;
-    F.FBtnForce.Top      := 185;
+    F.FBtnForce.Top      := 281;
     F.FBtnForce.Width   := 130;
     F.FBtnForce.ModalResult := mrNo;
 
@@ -115,12 +132,15 @@ begin
     F.FBtnCancel.Parent    := F;
     F.FBtnCancel.Caption   := 'Cancel';
     F.FBtnCancel.Left      := F.ClientWidth - 84;
-    F.FBtnCancel.Top       := 220;
+    F.FBtnCancel.Top       := 316;
     F.FBtnCancel.Width     := 72;
     F.FBtnCancel.ModalResult := mrCancel;
     F.FBtnCancel.Cancel    := True;
 
     Res := F.ShowModal;
+    // Ignore list is a persisted setting, not part of the update decision --
+    // save it regardless of which button closed the dialog.
+    SaveIgnorePatterns(F.FMemoIgnore.Lines.ToStringArray);
     if (Res <> mrYes) and (Res <> mrNo) then Exit;
 
     Sel := [];
