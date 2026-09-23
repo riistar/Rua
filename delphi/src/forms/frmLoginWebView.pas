@@ -1,4 +1,4 @@
-unit frmLoginWebView;
+﻿unit frmLoginWebView;
 {
   Embedded WebView2 (Edge) browser for Nexon login.
   Navigates to nexon.com login. Polls for TpaSession / NxLSession every 1.5s.
@@ -44,6 +44,10 @@ type
     FPostLoginNavCount: Integer; // Count of post-login navigations to launcher pages (avoids redirect loops)
     FExchangeFailed:     Boolean; // True when TPA exchange failed — skip re-exchange, use NxLSession fast path
     FFailedTpa:          string;  // TpaSession value that failed to exchange (reset when a new TpaSession appears)
+    FFailedNexonCode:    Integer; // Nexon error code from the last failed exchange (e.g. 20027 = device not trusted)
+    FRetryAfterTicks:    Integer; // Device-trust (20027) only: ticks left before retrying the SAME TpaSession —
+                                  // that error clears server-side once the user verifies, without the cookie changing
+    FTrustRetriesLeft:   Integer; // Device-trust (20027) only: remaining auto-retries for the current TpaSession
     FAltCookieUri:     Boolean; // Alternates between www.nexon.com and nxl.nxfs.nexon.com for GetCookies
     FClosePending:     Integer; // Countdown: NxLSession found, wait N more polls for cookies to stabilize before closing
     FChoicePanel:      TPanel;  // Login method chooser (Nexon Account vs SSO)
@@ -389,6 +393,7 @@ const
   WANT: array[0..10] of string = (
     'NxLSession', 'AToken', 'g_AToken', 'NexonUserID', 'id_token', 'TpaSession', 'NxGUN',
     'arenaSid', 'tpatype', 'PARTNERKEY', 'FromMarvelMachine');
+  TRUST_MAX_RETRIES = 4; // auto-retries of a 20027 (device not trusted) TpaSession exchange
 var
   CookieList:  TCoreWebView2CookieList;
   Cookie:      TCoreWebView2Cookie;
@@ -398,6 +403,7 @@ var
   HttpStatus:  Integer;
   NexonCode:   Integer;
   IsPostLogin: Boolean;
+  WasTrustRetry: Boolean;
 begin
   if FDestroying then Exit;
   if (aResult <> S_OK) or (aCookieList = nil) or FExchanging then Exit;
@@ -548,6 +554,20 @@ begin
   if FExchangeFailed and (TpaSession <> FFailedTpa) then
     FExchangeFailed := False;
 
+  // Device-trust rejection (20027) clears server-side once the user verifies — the
+  // TpaSession cookie itself never changes, so re-arm on a timer instead of waiting
+  // for a cookie change that will never come.
+  // Bounded (TRUST_MAX_RETRIES, growing delay) because TpaSession is short-lived — once it
+  // expires retrying is pointless. Skipped when a browser NxLSession exists: that path
+  // falls through to the fast path and closes without needing the exchange.
+  if FExchangeFailed and (FFailedNexonCode = 20027) and (TpaSession = FFailedTpa)
+     and (FTrustRetriesLeft > 0) and (Pos('NxLSession', Raw) = 0) then
+  begin
+    Dec(FRetryAfterTicks);
+    if FRetryAfterTicks <= 0 then
+      FExchangeFailed := False;
+  end;
+
   if (TpaSession <> '') and (not FExchangeFailed) then
   begin
     // Only process TPA if on a nexon domain — SSO OAuth pages (accounts.google.com,
@@ -590,17 +610,46 @@ begin
       // not discard the valid browser session. If the page set a browser NxLSession,
       // fall through to the fast-path handling below. Otherwise keep the dialog open
       // with a clear error so the user can re-login or cancel.
-      FExchangeFailed := True;
-      FFailedTpa      := TpaSession;
-      FExchanging     := False;
+      // Was this failure a device-trust auto-retry of the same TpaSession?
+      WasTrustRetry := (FFailedNexonCode = 20027) and (FFailedTpa = TpaSession);
+      if NexonCode = 20027 then
+      begin
+        if WasTrustRetry then
+          Dec(FTrustRetriesLeft)
+        else
+          FTrustRetriesLeft := TRUST_MAX_RETRIES;
+        // Growing delay: 2, 4, 6, 8 ticks (~3s .. 12s at the 1.5s poll interval)
+        FRetryAfterTicks := 2 * (TRUST_MAX_RETRIES - FTrustRetriesLeft + 1);
+      end;
+      FExchangeFailed  := True;
+      FFailedTpa       := TpaSession;
+      FFailedNexonCode := NexonCode;
+      FExchanging      := False;
       if Pos('NxLSession', Raw) = 0 then
       begin
         if NexonCode = 20027 then
-          // Nexon requires this device/browser be verified before launcher exchange works.
-          // Check email for a "Trust this device" link from Nexon, click it, then retry here.
+        begin
+          // Nexon's launcher-side device trust is a SEPARATE ledger from the nexon.com
+          // website session — verifying the emailed code on the website (even inside this
+          // WebView2) does NOT clear it. Confirmed: only running the official Nexon Launcher
+          // and completing its device verification clears this for the launcher API.
+          // The same TpaSession is retried a few times (in case verification was just
+          // completed), but TpaSession expires quickly — so tell the user to log in again.
+          if FTrustRetriesLeft > 0 then
+            LblStatus.Caption :=
+              'Nexon has not trusted this device for the launcher yet. Open the official ' +
+              'Nexon Launcher, log in there and complete its device verification once, then ' +
+              'log in again here.'
+          else
+            LblStatus.Caption :=
+              'Device still not trusted by Nexon. Complete device verification in the ' +
+              'official Nexon Launcher, then log in again here (or press Cancel).';
+        end
+        else if WasTrustRetry then
+          // Retry of a device-trust failure now fails differently — TpaSession most likely expired.
           LblStatus.Caption :=
-            'Nexon requires this device to be verified first. Check your email for a ' +
-            '"trust this device" message from Nexon, approve it, then log in again.'
+            'Login session expired while waiting for device verification. After completing ' +
+            'verification in the official Nexon Launcher, log in again here (or press Cancel).'
         else
           LblStatus.Caption := Format(
             'Session exchange failed (HTTP %d). TpaSession expires in seconds — ' +

@@ -206,8 +206,9 @@ begin
     begin
       if NexonCode = 20027 then
         LblStatus.Caption :=
-          'Nexon requires this device to be verified first. Check your email for a ' +
-          '"trust this device" message from Nexon, approve it, then Import again.'
+          'Nexon has not trusted this device for the launcher yet. Open the official ' +
+          'Nexon Launcher, log in there and complete its device verification once, then ' +
+          'come back and Import again.'
       else
         LblStatus.Caption := Format(
           'Exchange failed (HTTP %d). ' +
@@ -375,8 +376,9 @@ begin
   begin
     if NexonCode = 20027 then
       LblStatus.Caption :=
-        'Nexon requires this device to be verified first. Check your email for a ' +
-        '"trust this device" message from Nexon, approve it, then retry.'
+        'Nexon has not trusted this device for the launcher yet. Open the official ' +
+        'Nexon Launcher, log in there and complete its device verification once, then ' +
+        'come back and retry.'
     else
       LblStatus.Caption := Format(
         'Exchange failed (HTTP %d). TpaSession may be expired — re-login and retry.',
