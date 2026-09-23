@@ -20,17 +20,17 @@ function Build-Project($ProjectFile, $Platform, $BuildConfig) {
 
 function Build-All($BuildConfig) {
     Build-Project 'Rua.dproj' 'Win64' $BuildConfig
-    Build-Project 'nxl3p_shim.dproj' 'Win32' $BuildConfig
+    Build-Project 'nxl3p_shim.dproj' 'Win64' $BuildConfig
     Build-Project 'nxl3p_stub.dproj' 'Win32' $BuildConfig
 }
 
 function Finalize-Release {
-    # Release builds go directly to release/ — just ensure runtime DLLs are there
+    # Release builds go directly to release/ - just ensure runtime DLLs are there
     $RuntimeDlls = @('sqlite3.dll', 'WebView2Loader.dll')
     foreach ($dll in $RuntimeDlls) {
         $src = Join-Path $ReleaseDir $dll
         if (-not (Test-Path $src)) {
-            Write-Host "WARNING: $dll not found in release/ — copy manually" -ForegroundColor Yellow
+            Write-Host "WARNING: $dll not found in release/ - copy manually" -ForegroundColor Yellow
         }
     }
     Write-Host "`nRelease ready: $ReleaseDir" -ForegroundColor Green
@@ -40,7 +40,7 @@ function Finalize-Release {
 if ($Project) {
     switch ($Project) {
         'Rua'  { Build-Project 'Rua.dproj' 'Win64' $Config }
-        'shim' { Build-Project 'nxl3p_shim.dproj' 'Win32' $Config }
+        'shim' { Build-Project 'nxl3p_shim.dproj' 'Win64' $Config }
         'stub' { Build-Project 'nxl3p_stub.dproj' 'Win32' $Config }
         default {
             Write-Host "Unknown project: $Project. Use Rua, shim, or stub." -ForegroundColor Red
