@@ -396,6 +396,7 @@ var
   SB:          TStringBuilder;
   Raw, TpaSession, DebugNames, CurSrc: string;
   HttpStatus:  Integer;
+  NexonCode:   Integer;
   IsPostLogin: Boolean;
 begin
   if FDestroying then Exit;
@@ -575,11 +576,12 @@ begin
     LblStatus.Caption    := 'Logged in — exchanging session...';
 
     try
-      FCookies := ExchangeTpaForNxLSession(TpaSession, GetDeviceId(FProfileName), HttpStatus);
+      FCookies := ExchangeTpaForNxLSession(TpaSession, GetDeviceId(FProfileName), HttpStatus, NexonCode);
     except
       // Network/TLS failure — treat as a failed exchange (fall back below).
       FCookies   := '';
       HttpStatus := -1;
+      NexonCode  := 0;
     end;
     if FCookies = '' then
     begin
@@ -593,10 +595,17 @@ begin
       FExchanging     := False;
       if Pos('NxLSession', Raw) = 0 then
       begin
-        LblStatus.Caption := Format(
-          'Session exchange failed (HTTP %d). TpaSession expires in seconds — ' +
-          'log in again and retry, or press Cancel.',
-          [HttpStatus]);
+        if NexonCode = 20027 then
+          // Nexon requires this device/browser be verified before launcher exchange works.
+          // Check email for a "Trust this device" link from Nexon, click it, then retry here.
+          LblStatus.Caption :=
+            'Nexon requires this device to be verified first. Check your email for a ' +
+            '"trust this device" message from Nexon, approve it, then log in again.'
+        else
+          LblStatus.Caption := Format(
+            'Session exchange failed (HTTP %d). TpaSession expires in seconds — ' +
+            'log in again and retry, or press Cancel.',
+            [HttpStatus]);
         TimerCookies.Enabled := True;
         Exit;
       end;

@@ -1,16 +1,4 @@
-# Changelog
-
-## v1.5.1 - 2026-09-24
-
-### Fixed
-- Browser login gave a misleading "TpaSession expires in seconds, retry" error when Nexon
-  actually rejected the session exchange for an unverified device (error code `20027`,
-  "Trust device required"). Retrying never fixed it. Rua now reads Nexon's error code and
-  tells you to check your email for Nexon's device-verification link instead.
-
-## v1.5 - 2026-09-19
-
-### Added
+﻿### Added
 - **Update ignore list.** Files or wildcard patterns (`*`, `?`, case-insensitive) that the
   patcher never touches, so your local mods are not flagged, repaired or overwritten. Applies
   to every mode: normal update check, Repair Bad Files and Re-download All. Edit it in

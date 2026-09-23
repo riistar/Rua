@@ -70,8 +70,9 @@ function FetchTicket(const Cookies: string; ProductId: Integer): string; // alia
 // Exchange TpaSession cookie (set by browser login page) for NxLSession + AToken.
 // Returns 'NxLSession=...; AToken=...; NexonUserID=...' cookie string on success, '' on failure.
 // HttpStatus receives the HTTP response code (0 if no response received).
+// NexonCode receives the x-arena-web-errorcode header value on failure (0 if none/not applicable).
 function ExchangeTpaForNxLSession(const TpaSession, DeviceId: string;
-  out HttpStatus: Integer): string;
+  out HttpStatus: Integer; out NexonCode: Integer): string;
 
 // Check if stored NxLSession is still valid via GET /api/account/v1/account.
 // Returns True if HTTP 200 (session valid), False if 401/403/other (expired).
@@ -425,7 +426,7 @@ begin
 end;
 
 function ExchangeTpaForNxLSession(const TpaSession, DeviceId: string;
-  out HttpStatus: Integer): string;
+  out HttpStatus: Integer; out NexonCode: Integer): string;
 const
   NXL_CLIENT_ID = '7853644408';
   KEEP: array[0..5] of string = ('NxLSession','AToken','NxGUN','g_AToken','NexonUserID','id_token');
@@ -441,6 +442,7 @@ var
 begin
   Result     := '';
   HttpStatus := 0;
+  NexonCode  := 0;
   if TpaSession = '' then Exit;
 
   GetTimeZoneInformation(TZ);
@@ -464,7 +466,11 @@ begin
 
     HttpStatus := Resp.StatusCode;
     DumpDebug('TPA', Resp, Http, '');  // always dump — captures 401/404 bodies
-    if Resp.StatusCode <> 200 then Exit;
+    if Resp.StatusCode <> 200 then
+    begin
+      NexonCode := ExtractNexonErrorCode(Resp);
+      Exit;
+    end;
 
     Result := ParseAuthCookies(Resp, Http, KEEP);
 

@@ -178,6 +178,7 @@ procedure TFormLogin.TryImportCookies(const RawCookies: string; Browser: TBrowse
 var
   TpaSession: string;
   HttpStatus: Integer;
+  NexonCode:  Integer;
 begin
   if FLoginDone then Exit;
 
@@ -200,14 +201,19 @@ begin
     LblStatus.Caption := 'Exchanging TpaSession → NxLSession...';
     Application.ProcessMessages;
 
-    FCookies := ExchangeTpaForNxLSession(TpaSession, GetDeviceId(FProfileName), HttpStatus);
+    FCookies := ExchangeTpaForNxLSession(TpaSession, GetDeviceId(FProfileName), HttpStatus, NexonCode);
     if FCookies = '' then
     begin
-      LblStatus.Caption := Format(
-        'Exchange failed (HTTP %d). ' +
-        'TpaSession expires in seconds. Log OUT of nexon.com completely in Firefox, ' +
-        'then log back in, then Import immediately.',
-        [HttpStatus]);
+      if NexonCode = 20027 then
+        LblStatus.Caption :=
+          'Nexon requires this device to be verified first. Check your email for a ' +
+          '"trust this device" message from Nexon, approve it, then Import again.'
+      else
+        LblStatus.Caption := Format(
+          'Exchange failed (HTTP %d). ' +
+          'TpaSession expires in seconds. Log OUT of nexon.com completely in Firefox, ' +
+          'then log back in, then Import immediately.',
+          [HttpStatus]);
       BtnImport.Enabled := True;
       Exit;
     end;
@@ -343,6 +349,7 @@ var
   Input:      string;
   TpaSession: string;
   HttpStatus: Integer;
+  NexonCode:  Integer;
 begin
   Input := Trim(InputBox(
     'Manual TpaSession entry',
@@ -363,12 +370,17 @@ begin
   LblStatus.Caption := 'Exchanging TpaSession → NxLSession...';
   Application.ProcessMessages;
 
-  FCookies := ExchangeTpaForNxLSession(TpaSession, GetDeviceId(FProfileName), HttpStatus);
+  FCookies := ExchangeTpaForNxLSession(TpaSession, GetDeviceId(FProfileName), HttpStatus, NexonCode);
   if FCookies = '' then
   begin
-    LblStatus.Caption := Format(
-      'Exchange failed (HTTP %d). TpaSession may be expired — re-login and retry.',
-      [HttpStatus]);
+    if NexonCode = 20027 then
+      LblStatus.Caption :=
+        'Nexon requires this device to be verified first. Check your email for a ' +
+        '"trust this device" message from Nexon, approve it, then retry.'
+    else
+      LblStatus.Caption := Format(
+        'Exchange failed (HTTP %d). TpaSession may be expired — re-login and retry.',
+        [HttpStatus]);
     BtnManual.Enabled := True;
     BtnImport.Enabled := True;
     Exit;
