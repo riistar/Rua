@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.5.2 - 2026-09-24
+
+### Added
+- **Pick exactly which files to update.** After scanning, Rua lists every new or changed file
+  with its status (New / Size changed / Content changed), new size, local size and the size
+  change. Choose **Update Selected**, **Update All**, or **Cancel**; **Select All / Select None**
+  toggle the checkboxes. Files you leave unchecked are offered again on the next check.
+- **Folder dialog shows every game folder**, marked "update available" or "up to date", and
+  lets you update just one of several. Actions: **Update Selected**, **Update All**,
+  **Repair Bad Files**, **Re-download All** (asks to confirm), with **All / None** selection.
+- "Re-download All Files" option in the update button's dropdown.
+
+### Changed
+- Updates detect same-size content changes by comparing against the manifest of the installed
+  version (cached after each update), so only new/changed files are downloaded.
+- Device-trust rejection (`20027`) now tells you to complete device verification in the
+  official Nexon Launcher, then log in again. Rua retries the same session a few times
+  (up to 4, with growing delay) in case verification was just completed.
+
+### Fixed
+- Cancelling during the file scan no longer marks the game as up to date.
+- Garbled characters (`â€"`) in login status text and patcher log messages.
+- `nxl3p_shim.dll` is now built as Win64, fixing "Failed to Init NXALauncher".
+
 ## v1.5.1 - 2026-09-24
 
 ### Fixed
