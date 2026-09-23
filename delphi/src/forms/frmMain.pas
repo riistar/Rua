@@ -145,6 +145,7 @@ type
     function  SessionTextFor(const Profile: string): string;
     procedure SessionTimerTick(Sender: TObject);
     procedure WMSysCommand(var Msg: TMessage); message WM_SYSCOMMAND;
+    procedure MenuForceAllClick(Sender: TObject);
     procedure DoCheckAndUpdate(AutoMode: Boolean; ForceAll: Boolean = False; VerifyMode: Boolean = False);
     procedure MenuVerifyRepairClick(Sender: TObject);
     procedure LvProfilesDblClick(Sender: TObject);
@@ -166,7 +167,7 @@ implementation
 
 uses
   Vcl.FileCtrl, Vcl.Themes, Winapi.ShellAPI,
-  frmLogin, frmLoginWebView, frmProfile, frmProfileEdit, frmSettings, frmFolderSelect,
+  frmLogin, frmLoginWebView, frmProfile, frmProfileEdit, frmSettings, frmFolderSelect, frmUpdateSelect,
   uBrowserCookies, uNxlPatcher, uCredStore;
 
 const
@@ -441,6 +442,10 @@ begin
   MIVerify.Caption     := 'Verify / Repair Files';
   MIVerify.OnClick     := MenuVerifyRepairClick;
   FUpdateMenu.Items.Add(MIVerify);
+  var MIForce: TMenuItem := TMenuItem.Create(FUpdateMenu);
+  MIForce.Caption      := 'Re-download All Files';
+  MIForce.OnClick      := MenuForceAllClick;
+  FUpdateMenu.Items.Add(MIForce);
 
   // Native split-button arrow: VCL renders the dropdown arrow and manages
   // outside-click dismissal.
@@ -955,6 +960,13 @@ begin
   DoCheckAndUpdate(False, False, True);
 end;
 
+procedure TFormMain.MenuForceAllClick(Sender: TObject);
+begin
+  if MessageDlg('Re-download every game file? This can take a long time.',
+       mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+    DoCheckAndUpdate(False, True);
+end;
+
 procedure TFormMain.LvProfilesDblClick(Sender: TObject);
 begin
   if SelectedProfile <> '' then
@@ -1151,11 +1163,13 @@ begin
     SkipFinalCleanup: Boolean;
     CheckIdx: Integer;
     UpdateRoots:      TArray<string>;
+    OutdatedRoots:    TArray<string>;
   begin
     Error            := '';
     SkipFinalCleanup := False;
     CheckIdx         := 0;
     UpdateRoots      := [];
+    OutdatedRoots    := [];
     try
       try
         RemoteHash := FetchManifestHash(Cookies, ProductId);
@@ -1207,6 +1221,8 @@ begin
             'patchdata\' + IntToStr(ProductId) + '.manifest.hash');
           if TFile.Exists(HashFile) then
             LocalHash := Trim(TFile.ReadAllText(HashFile));
+          if LocalHash <> RemoteHash then
+            OutdatedRoots := OutdatedRoots + [R];
           if VerifyMode or ForceAll or (LocalHash <> RemoteHash) then
             UpdateRoots := UpdateRoots + [R]
           else
@@ -1216,16 +1232,24 @@ begin
         end)(InstRoot, CheckIdx);
       end;
 
-      // Phase 2: let user pick folders and mode (verify or force).
-      if not AutoMode then
+      // Phase 2: let the user pick folders (one, several, all or none) and the mode:
+      // update / repair bad files / re-download all. Shown when something is
+      // outdated or a verify/force was requested from the button menu.
+      // Per-file selection happens after each folder's scan (frmUpdateSelect).
+      if (not AutoMode) and (Length(UpdateRoots) > 0) then
         TThread.Synchronize(nil, procedure
         var
-          ChosenForce: Boolean;
+          Chosen: TArray<string>;
+          Mode:   TUpdateMode;
         begin
-          if not TFormFolderSelect.Execute(UpdateRoots, ChosenForce) then
+          if not TFormFolderSelect.Execute(InstRoots, UpdateRoots, OutdatedRoots, Chosen, Mode) then
             UpdateRoots := []
           else
-            ForceAll := ChosenForce;
+          begin
+            UpdateRoots := Chosen;
+            VerifyMode  := Mode = umRepair;
+            ForceAll    := Mode = umForceAll;
+          end;
         end);
 
       for InstRoot in UpdateRoots do
@@ -1249,7 +1273,45 @@ begin
         begin
           // IIAP: R is value param → no aliasing if UpdateRoots has multiple entries.
           (procedure(const R: string)
+          var
+            OldManifest: string;
+            SelectFn:    TPatchSelect;
           begin
+            // Diff against the manifest of the installed version (cached after the
+            // last update) so same-size content changes are caught too. Verify and
+            // re-download compare against the disk only.
+            OldManifest := '';
+            if not (VerifyMode or ForceAll) then
+            begin
+              var HF := TPath.Combine(R, 'patchdata' + IntToStr(ProductId) + '.manifest.hash');
+              if TFile.Exists(HF) then
+              begin
+                var LH := Trim(TFile.ReadAllText(HF));
+                if (LH <> '') and (LH <> RemoteHash) then
+                  OldManifest := LoadCachedManifest(
+                    TPath.Combine(R, 'patchdata' + LH + '.manifest.json'));
+              end;
+            end;
+
+            // Interactive runs list the changed files and let the user pick
+            // (Selected / All / None). Auto-update and re-download-all don't ask.
+            SelectFn := nil;
+            if not AutoMode and not ForceAll then
+              SelectFn := function(const Items: TArray<TPatchItem>;
+                out Selected: TArray<string>): Boolean
+              var
+                Ok:  Boolean;
+                Sel: TArray<string>;
+              begin
+                Ok := False;
+                TThread.Synchronize(nil, procedure
+                begin
+                  Ok := TFormUpdateSelect.Execute(R, Items, Sel);
+                end);
+                Selected := Sel;
+                Result   := Ok;
+              end;
+
             TThread.Queue(nil, procedure
             begin
               Log('Verifying: ' + R);
@@ -1298,9 +1360,9 @@ begin
                   PrgUpdate.Position  := Pct;
                 end);
               end,
-              '', ForceAll,
+              OldManifest, ForceAll,
               function: Boolean begin Result := FCancelDownload; end,
-              FPauseEvent, False, nil, LoadIgnorePatterns);
+              FPauseEvent, False, nil, LoadIgnorePatterns, SelectFn);
 
             TThread.Queue(nil, procedure
             begin

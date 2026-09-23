@@ -3,30 +3,47 @@ unit frmFolderSelect;
 interface
 
 uses
-  System.SysUtils, System.Types,
+  System.SysUtils, System.Types, System.UITypes,
   Winapi.Windows,
   Vcl.Forms, Vcl.Controls, Vcl.StdCtrls, Vcl.CheckLst,
   Vcl.ExtCtrls, Vcl.Dialogs, uIgnoreList;
 
 type
+  // What the user asked for in the folder dialog.
+  TUpdateMode = (umUpdate,     // patch new/changed files (per-file list shown after scan)
+                 umRepair,     // re-check every file on disk, fix bad/missing ones
+                 umForceAll);  // re-download everything
+
   TFormFolderSelect = class(TForm)
   private
     FLabel:      TLabel;
     FList:       TCheckListBox;
     FLblIgnore:  TLabel;
     FMemoIgnore: TMemo;
-    FBtnAll:    TButton;
-    FBtnNone:   TButton;
-    FBtnRepair: TButton;
-    FBtnForce:  TButton;
-    FBtnCancel: TButton;
+    FBtnAll:     TButton;
+    FBtnNone:    TButton;
+    FBtnUpdSel:  TButton;
+    FBtnUpdAll:  TButton;
+    FBtnRepair:  TButton;
+    FBtnForce:   TButton;
+    FBtnCancel:  TButton;
     procedure BtnAllClick(Sender: TObject);
     procedure BtnNoneClick(Sender: TObject);
+    procedure BtnUpdAllClick(Sender: TObject);
   public
-    class function Execute(var Roots: TArray<string>; out ForceAll: Boolean): Boolean;
+    // AllRoots: every configured game folder. Checked: pre-checked folders.
+    // Outdated: folders with a newer version available (marked in the list).
+    // On OK, Roots = the folders left checked.
+    class function Execute(const AllRoots, Checked, Outdated: TArray<string>;
+      out Roots: TArray<string>; out Mode: TUpdateMode): Boolean;
   end;
 
 implementation
+
+const
+  mrUpdate = mrOk;
+  mrRepair = mrYes;
+  mrForce  = mrNo;
 
 procedure TFormFolderSelect.BtnAllClick(Sender: TObject);
 var I: Integer;
@@ -40,24 +57,49 @@ begin
   for I := 0 to FList.Count - 1 do FList.Checked[I] := False;
 end;
 
-class function TFormFolderSelect.Execute(var Roots: TArray<string>; out ForceAll: Boolean): Boolean;
+procedure TFormFolderSelect.BtnUpdAllClick(Sender: TObject);
+begin
+  BtnAllClick(Sender);
+  ModalResult := mrUpdate;
+end;
+
+class function TFormFolderSelect.Execute(const AllRoots, Checked, Outdated: TArray<string>;
+  out Roots: TArray<string>; out Mode: TUpdateMode): Boolean;
 var
-  F:       TFormFolderSelect;
-  I:       Integer;
-  Sel:     TArray<string>;
-  Res:     Integer;
+  F:   TFormFolderSelect;
+  I:   Integer;
+  Sel: TArray<string>;
+  Res: Integer;
+
+  function InList(const R: string; const L: TArray<string>): Boolean;
+  begin
+    for var O in L do
+      if SameText(O, R) then Exit(True);
+    Result := False;
+  end;
+
+  function MakeButton(const Cap: string; X, Y, W: Integer; MR: Integer): TButton;
+  begin
+    Result := TButton.Create(F);
+    Result.Parent      := F;
+    Result.Caption     := Cap;
+    Result.SetBounds(X, Y, W, 26);
+    Result.ModalResult := MR;
+  end;
+
 begin
   Result := False;
-  ForceAll := False;
-  if Length(Roots) = 0 then Exit;
+  Roots  := [];
+  Mode   := umUpdate;
+  if Length(AllRoots) = 0 then Exit;
 
   F := TFormFolderSelect.CreateNew(Application);
   try
     F.Caption      := 'Select Folders to Update';
     F.BorderStyle  := bsDialog;
     F.Position     := poScreenCenter;
-    F.Width        := 520;
-    F.Height       := 400;
+    F.Width        := 600;
+    F.Height       := 420;
     F.Font.Name    := 'Segoe UI';
     F.Font.Size    := 9;
     F.KeyPreview   := True;
@@ -68,6 +110,7 @@ begin
     F.FLabel.Top        := 12;
     F.FLabel.Caption    := 'Choose which game folders to update:';
 
+    // Item text carries a status suffix; the real path is AllRoots[index].
     F.FList             := TCheckListBox.Create(F);
     F.FList.Parent      := F;
     F.FList.Left        := 12;
@@ -75,10 +118,14 @@ begin
     F.FList.Width       := F.ClientWidth - 24;
     F.FList.Height      := 140;
     F.FList.ItemHeight  := 20;
-    for var R in Roots do
+    for var R in AllRoots do
     begin
-      var Idx := F.FList.Items.Add(R);
-      F.FList.Checked[Idx] := True;
+      var Idx: Integer;
+      if InList(R, Outdated) then
+        Idx := F.FList.Items.Add(R + '   (update available)')
+      else
+        Idx := F.FList.Items.Add(R + '   (up to date)');
+      F.FList.Checked[Idx] := InList(R, Checked);
     end;
 
     F.FLblIgnore            := TLabel.Create(F);
@@ -96,62 +143,48 @@ begin
     F.FMemoIgnore.ScrollBars := ssVertical;
     F.FMemoIgnore.Lines.Text := string.Join(sLineBreak, LoadIgnorePatterns);
 
-    F.FBtnAll            := TButton.Create(F);
-    F.FBtnAll.Parent     := F;
-    F.FBtnAll.Caption    := 'All';
-    F.FBtnAll.Left       := 12;
-    F.FBtnAll.Top        := 281;
-    F.FBtnAll.Width      := 60;
-    F.FBtnAll.OnClick    := F.BtnAllClick;
+    // Row 1: selection helpers.
+    F.FBtnAll          := MakeButton('All', 12, 281, 60, mrNone);
+    F.FBtnAll.OnClick  := F.BtnAllClick;
+    F.FBtnNone         := MakeButton('None', 78, 281, 60, mrNone);
+    F.FBtnNone.OnClick := F.BtnNoneClick;
 
-    F.FBtnNone           := TButton.Create(F);
-    F.FBtnNone.Parent    := F;
-    F.FBtnNone.Caption   := 'None';
-    F.FBtnNone.Left      := 78;
-    F.FBtnNone.Top       := 281;
-    F.FBtnNone.Width     := 60;
-    F.FBtnNone.OnClick   := F.BtnNoneClick;
-
-    F.FBtnRepair         := TButton.Create(F);
-    F.FBtnRepair.Parent  := F;
-    F.FBtnRepair.Caption := 'Repair Bad Files';
-    F.FBtnRepair.Left    := 160;
-    F.FBtnRepair.Top     := 281;
-    F.FBtnRepair.Width   := 130;
-    F.FBtnRepair.ModalResult := mrYes;
-
-    F.FBtnForce          := TButton.Create(F);
-    F.FBtnForce.Parent   := F;
-    F.FBtnForce.Caption  := 'Re-download All';
-    F.FBtnForce.Left     := 300;
-    F.FBtnForce.Top      := 281;
-    F.FBtnForce.Width   := 130;
-    F.FBtnForce.ModalResult := mrNo;
-
-    F.FBtnCancel           := TButton.Create(F);
-    F.FBtnCancel.Parent    := F;
-    F.FBtnCancel.Caption   := 'Cancel';
-    F.FBtnCancel.Left      := F.ClientWidth - 84;
-    F.FBtnCancel.Top       := 316;
-    F.FBtnCancel.Width     := 72;
-    F.FBtnCancel.ModalResult := mrCancel;
-    F.FBtnCancel.Cancel    := True;
+    // Row 2: actions.
+    F.FBtnUpdSel := MakeButton('Update Selected', 12, 318, 112, mrUpdate);
+    F.FBtnUpdSel.Default := True;
+    F.FBtnUpdAll := MakeButton('Update All', 130, 318, 90, mrNone);
+    F.FBtnUpdAll.OnClick := F.BtnUpdAllClick;
+    F.FBtnRepair := MakeButton('Repair Bad Files', 226, 318, 112, mrRepair);
+    F.FBtnForce  := MakeButton('Re-download All', 344, 318, 112, mrForce);
+    F.FBtnCancel := MakeButton('Cancel', F.ClientWidth - 84, 318, 72, mrCancel);
+    F.FBtnCancel.Cancel := True;
 
     Res := F.ShowModal;
     // Ignore list is a persisted setting, not part of the update decision --
     // save it regardless of which button closed the dialog.
     SaveIgnorePatterns(F.FMemoIgnore.Lines.ToStringArray);
-    if (Res <> mrYes) and (Res <> mrNo) then Exit;
+    case Res of
+      mrUpdate: Mode := umUpdate;
+      mrRepair: Mode := umRepair;
+      mrForce:
+        begin
+          if MessageDlg('Re-download every game file in the selected folders? ' +
+               'This can take a long time.', mtConfirmation, [mbYes, mbNo], 0) <> mrYes then
+            Exit;
+          Mode := umForceAll;
+        end;
+    else
+      Exit;
+    end;
 
     Sel := [];
     for I := 0 to F.FList.Count - 1 do
       if F.FList.Checked[I] then
-        Sel := Sel + [F.FList.Items[I]];
+        Sel := Sel + [AllRoots[I]];
 
     if Length(Sel) = 0 then Exit;
-    Roots     := Sel;
-    ForceAll  := (Res = mrNo);
-    Result    := True;
+    Roots  := Sel;
+    Result := True;
   finally
     F.Free;
   end;

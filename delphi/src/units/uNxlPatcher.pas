@@ -1,4 +1,4 @@
-unit uNxlPatcher;
+﻿unit uNxlPatcher;
 (*
   NxLauncher manifest-based patcher for Mabinogi NA (product 10200).
 
@@ -25,6 +25,19 @@ type
   // Current, Total = file index (1-based) and total patch count; FileName = relative path
   TPatchProgress = reference to procedure(Current, Total: Integer; const FileName: string);
 
+  // One file the scan found needing an update (shown to the user for selection).
+  TPatchItem = record
+    Path:      string;  // relative to the install root
+    Size:      Int64;   // manifest (new) size
+    LocalSize: Int64;   // current size on disk, -1 = missing
+    Reason:    string;  // 'New', 'Size changed', 'Content changed', 'Re-download'
+  end;
+
+  // Called (on the patcher thread) after the scan when files need updating.
+  // Return False to skip the update entirely; otherwise Selected = paths to patch.
+  TPatchSelect = reference to function(const Items: TArray<TPatchItem>;
+    out Selected: TArray<string>): Boolean;
+
 // ManifestHash  : hash string returned by FetchManifestHash
 // InstallRoot   : e.g. E:\mabinogi2\  (parent of appdata\ and package\)
 // ProductId     : 10200 -- used to name the local hash file
@@ -36,6 +49,9 @@ type
 // NeedCount receives the number of files that would need updating (nil = ignore).
 // IgnorePatterns: relative paths/wildcards (see uIgnoreList) always excluded --
 // applies before ForceAll/verify, so ignored files are never touched by any mode.
+// SelectFiles   : optional; lets the caller pick which of the needed files to patch.
+// A partial selection leaves the stored manifest hash untouched, so the skipped
+// files are offered again on the next check.
 procedure RunPatcher(const ManifestHash, InstallRoot: string;
   ProductId: Integer; const Log: TPatchLog;
   const Progress: TPatchProgress = nil;
@@ -44,7 +60,8 @@ procedure RunPatcher(const ManifestHash, InstallRoot: string;
   PauseEvent: TEvent = nil;
   ScanOnly: Boolean = False;
   NeedCount: PInteger = nil;
-  const IgnorePatterns: TArray<string> = nil);
+  const IgnorePatterns: TArray<string> = nil;
+  const SelectFiles: TPatchSelect = nil);
 function LoadCachedManifest(const Path: string): string;
 
 implementation
@@ -420,24 +437,29 @@ begin
   end;
 end;
 
-function NeedsPatch(const E: TFileEntry; const InstRoot: string; const Log: TPatchLog): Boolean;
+// Returns '' when the file is up to date, else a short reason ('New', 'Size changed').
+// LocalSize receives the on-disk size (-1 = missing).
+function NeedsPatch(const E: TFileEntry; const InstRoot: string; const Log: TPatchLog;
+  out LocalSize: Int64): string;
 var
   FullPath: string;
 begin
-  Result := False;
+  Result    := '';
+  LocalSize := -1;
   if E.IsDir then Exit;
   FullPath := TPath.Combine(InstRoot, E.Path);
-  if not TFile.Exists(FullPath) then begin Log('  missing: ' + E.Path); Exit(True); end;
+  if not TFile.Exists(FullPath) then begin Log('  missing: ' + E.Path); Exit('New'); end;
+  LocalSize := GetLocalFileSize(FullPath);
 
   // GATE: size-only change detection. Re-compressing every part to SHA1-verify
   // (VerifyFileByHash) hammers CPU/disk on every scan — Mabinogi's manifest
   // `fsize` is the authoritative "does this file need updating" signal.
   // Recompress-verify is only worth it for a targeted Verify/Repair, not the
   // routine startup check. If sizes match, consider the file up to date.
-  if GetLocalFileSize(FullPath) <> E.FSize then
+  if LocalSize <> E.FSize then
   begin
     Log('  size mismatch: ' + E.Path);
-    Exit(True);
+    Exit('Size changed');
   end;
   Log('  size OK: ' + E.Path);
 end;
@@ -572,7 +594,8 @@ procedure RunPatcher(const ManifestHash, InstallRoot: string;
   PauseEvent: TEvent = nil;
   ScanOnly: Boolean = False;
   NeedCount: PInteger = nil;
-  const IgnorePatterns: TArray<string> = nil);
+  const IgnorePatterns: TArray<string> = nil;
+  const SelectFiles: TPatchSelect = nil);
 const
   MAX_DL = 8;
 var
@@ -580,6 +603,8 @@ var
   JSON:     string;
   All:      TArray<TFileEntry>;
   Need:     TArray<TFileEntry>;
+  Items:    TArray<TPatchItem>;  // parallel to Need: reason + local size for the UI
+  Partial:  Boolean;
   E:        TFileEntry;
   NeedN:    Integer;
   Done:     Integer;
@@ -656,6 +681,8 @@ begin
 
   NeedN := 0;
   SetLength(Need, Length(All));
+  SetLength(Items, Length(All));
+  Partial := False;
   var Seen := TDictionary<string, Boolean>.Create;
   var Candidates: TArray<TFileEntry>;
   var TotalFiles := 0;
@@ -685,7 +712,6 @@ begin
     end;
   finally
     Seen.Free;
-    OldDict.Free;
   end;
   if IgnoredN > 0 then
     Log(Format('  %d file(s) skipped (ignore list)', [IgnoredN]));
@@ -714,20 +740,28 @@ begin
             var CurScan := ScanIdx;
             if Assigned(Progress) then Progress(CurScan, TotalFiles, 'Scanning: ' + Entry.Path);
 
-            var NeedsIt := ForceAll;
-            if not NeedsIt and (OldDict <> nil) then
+            // Disk check first (missing / size), then the cached-manifest diff, which
+            // catches same-size content changes between the installed and new version.
+            var LocalSize: Int64;
+            var Reason := NeedsPatch(Entry, InstallRoot, Log, LocalSize);
+            if (Reason = '') and (OldDict <> nil) then
             begin
               var OldHash: string;
-              NeedsIt := not OldDict.TryGetValue(Entry.Path.ToLower, OldHash) or (OldHash <> Entry.ObjHash);
+              if not OldDict.TryGetValue(Entry.Path.ToLower, OldHash) or (OldHash <> Entry.ObjHash) then
+                Reason := 'Content changed';
             end;
-            if not NeedsIt then
-              NeedsIt := NeedsPatch(Entry, InstallRoot, Log);
+            if (Reason = '') and ForceAll then
+              Reason := 'Re-download';
 
-            if NeedsIt then
+            if Reason <> '' then
             begin
               ScanLock.Enter;
               try
                 Need[NeedN] := Entry;
+                Items[NeedN].Path      := Entry.Path;
+                Items[NeedN].Size      := Entry.FSize;
+                Items[NeedN].LocalSize := LocalSize;
+                Items[NeedN].Reason    := Reason;
                 Inc(NeedN);
               finally
                 ScanLock.Leave;
@@ -745,14 +779,19 @@ begin
   finally
     ScanLock.Free;
     ScanSem.Free;
+    OldDict.Free; // freed only after every scan task is done with it
   end;
 
   if Assigned(ShouldCancel) and ShouldCancel() then
   begin
+    // Must not fall through to the "up to date" branch below — that would store
+    // the new manifest hash and hide the unscanned files from the next check.
     Log('Scan cancelled.');
-    NeedN := 0;
+    if NeedCount <> nil then NeedCount^ := 0;
+    Exit;
   end;
   SetLength(Need, NeedN);
+  SetLength(Items, NeedN);
   Log(Format('  %d files need updating', [NeedN]));
   if NeedCount <> nil then NeedCount^ := NeedN;
 
@@ -765,12 +804,50 @@ begin
         'patchdata\' + IntToStr(ProductId) + '.manifest.hash');
       TDirectory.CreateDirectory(TPath.GetDirectoryName(HashFile));
       TFile.WriteAllText(HashFile, ManifestHash, TEncoding.UTF8);
+      // Cache the manifest too, so the next update can diff against it.
+      TFile.WriteAllText(TPath.Combine(InstallRoot,
+        'patchdata' + ManifestHash + '.manifest.json'), JSON, TEncoding.UTF8);
     except end;
     Log('Already up to date.');
     Exit;
   end;
 
   if ScanOnly then Exit; // scan complete — caller decides whether to download
+
+  // Let the caller pick which files to patch.
+  if Assigned(SelectFiles) then
+  begin
+    var Selected: TArray<string>;
+    if not SelectFiles(Items, Selected) then
+    begin
+      Log('Update skipped by user.');
+      Exit;
+    end;
+    var SelSet := TDictionary<string, Boolean>.Create;
+    try
+      for var P in Selected do
+        SelSet.AddOrSetValue(P.ToLower, True);
+      var Kept := 0;
+      for var I := 0 to NeedN - 1 do
+        if SelSet.ContainsKey(Need[I].Path.ToLower) then
+        begin
+          Need[Kept] := Need[I];
+          Inc(Kept);
+        end;
+      Partial := Kept < NeedN;
+      if Partial then
+        Log(Format('  %d of %d files selected', [Kept, NeedN]));
+      NeedN := Kept;
+      SetLength(Need, NeedN);
+    finally
+      SelSet.Free;
+    end;
+    if NeedN = 0 then
+    begin
+      Log('No files selected — nothing to do.');
+      Exit;
+    end;
+  end;
 
   Done     := 0;
   Sem      := TSemaphore.Create(nil, MAX_DL, MAX_DL, '');
@@ -790,6 +867,13 @@ begin
   if Assigned(ShouldCancel) and ShouldCancel() then
   begin
     Log('Cancelled — hash not updated, will resume on next check.');
+    Exit;
+  end;
+
+  if Partial then
+  begin
+    // Skipped files must be offered again next time — keep the old hash/cache.
+    Log('Partial update complete — skipped files will be listed on the next check.');
     Exit;
   end;
 
