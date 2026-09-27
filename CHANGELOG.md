@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.5.3 - 2026-09-28
+
+### Added
+- **Linux / Steam Deck support** (Wine, Proton, Lutris). Under Wine the login window uses an
+  embedded Chromium (CEF) browser, downloaded once on first login (~180 MB). Override the
+  engine with `config.ini` `[Browser] Engine = auto | webview2 | cef`. See `README-LINUX.md`.
+- Under Wine: game install auto-detected (Nexon config, uninstall entries, Lutris / Steam /
+  Bottles / `~/.wine` prefixes), and the system theme is used (custom styles render broken).
+- **Log in again with a valid session.** Refresh Login on a still-valid session now asks
+  whether to log in again instead of doing nothing. A forced re-login always shows the login
+  method choice and never silently reuses the cached browser session.
+- **Confirm before the login window closes.** After a successful login Rua asks before
+  closing. Choose **No** to keep the page open (e.g. to capture Nexon's device verification
+  page), then press **Done**; the session is kept.
+
 ## v1.5.2 - 2026-09-24
 
 ### Added
