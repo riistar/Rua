@@ -54,6 +54,9 @@ type
     FClosePending:     Integer; // Countdown: NxLSession found, wait N more polls for cookies to stabilize before closing
     FChoicePanel:      TPanel;  // Login method chooser (Nexon Account vs SSO)
     FOldTpaSession:    string;  // TpaSession value found in the browser cache at startup (stale — do not re-exchange)
+    FOldNxLSession:    string;  // ForceRelogin only: cached NxLSession at startup — ignored until a fresh login replaces it
+    FLoginDone:        Boolean; // Session captured; waiting for the user to confirm close (page stays browsable)
+    procedure FinishLogin(const Msg: string);
     procedure BrowserReady(Sender: TObject);
     procedure BrowserError(Sender: TObject; const Text: string);
     procedure BrowserStatus(Sender: TObject; const Text: string);
@@ -294,6 +297,9 @@ end;
 
 procedure TFormLoginWebView.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
 begin
+  // Session already captured — closing the window any way (X, Done) keeps it.
+  if FLoginDone then
+    ModalResult := mrOK;
   if Assigned(FBrowser) and not FBrowser.RequestClose then
   begin
     // Engine needs to shut down first (CEF) — hold the result until OnClosed.
@@ -319,6 +325,20 @@ begin
     (Pos('/otp', SrcLower) > 0) or (Pos('/mfa', SrcLower) > 0) or
     (Pos('/2fa', SrcLower) > 0) or (Pos('two-step', SrcLower) > 0) or
     (Pos('/device', SrcLower) > 0));
+end;
+
+// Removes every "Name=value" entry from a "a=1; b=2" cookie string.
+function RemoveCookie(const Raw, Name: string): string;
+var
+  Part: string;
+begin
+  Result := '';
+  for Part in Raw.Split([';']) do
+    if (Trim(Part) <> '') and not Trim(Part).StartsWith(Name + '=') then
+    begin
+      if Result <> '' then Result := Result + '; ';
+      Result := Result + Trim(Part);
+    end;
 end;
 
 procedure TFormLoginWebView.BrowserNavigationCompleted(Sender: TObject; Success: Boolean);
@@ -421,7 +441,7 @@ var
   IsPostLogin: Boolean;
   WasTrustRetry: Boolean;
 begin
-  if FDestroying or FExchanging then Exit;
+  if FDestroying or FExchanging or FLoginDone then Exit;
 
   // Snapshot and reset immediately to be re-entry safe.
   IsPostLogin       := FPostLoginCapture;
@@ -444,6 +464,16 @@ begin
   finally
     SB.Free;
   end;
+
+  // Forced re-login: the cached browser NxLSession still counts as "logged in" and
+  // would close the dialog straight away. Drop it until a fresh login replaces it.
+  // Same for the cached TpaSession, which would otherwise be re-exchanged.
+  if FForceRelogin and (FOldNxLSession <> '')
+     and (ExtractCookieValue(Raw, 'NxLSession') = FOldNxLSession) then
+    Raw := RemoveCookie(Raw, 'NxLSession');
+  if FForceRelogin and (FOldTpaSession <> '')
+     and (ExtractCookieValue(Raw, 'TpaSession') = FOldTpaSession) then
+    Raw := RemoveCookie(Raw, 'TpaSession');
 
   CurSrc := LowerCase(FBrowser.Source);
 
@@ -501,17 +531,13 @@ begin
            and (ExtractCookieValue(Raw, 'AToken') = '') then
         begin
           FCookies := Merged;
-          LblStatus.Caption := 'Session upgraded. Closing...';
-          TimerCookies.Enabled := False;
-          ModalResult := mrOK;
+          FinishLogin('Session upgraded.');
           Exit;
         end;
         // Web login complete but no launcher tokens — close with web cookies.
         // PromptReLogin will validate and retry if they don't work for launch.
-        TimerCookies.Enabled := False;
         FCookies := Raw;
-        LblStatus.Caption := 'Logged in. Closing...';
-        ModalResult := mrOK;
+        FinishLogin('Logged in.');
         Exit;
       end;
       if DebugNames <> '' then
@@ -532,6 +558,14 @@ begin
     // If no existing session, the user must pick Nexon Account or SSO first.
     // If there IS an existing session (from SSO), reuse it.
     FOldTpaSession := ExtractCookieValue(Raw, 'TpaSession');
+    if FForceRelogin then
+    begin
+      // Explicit re-login: never restore the cached session — always log in fresh.
+      FOldNxLSession := ExtractCookieValue(Raw, 'NxLSession');
+      FChoicePanel.Show;
+      FChoicePanel.BringToFront;
+      Exit;
+    end;
     if (FOldTpaSession = '') and (Pos('NxLSession', Raw) = 0) then
     begin
       // No session yet — show choice panel.
@@ -587,8 +621,7 @@ begin
       if (ExtractCookieValue(FCookies, 'AToken') = '')
          and (ExtractCookieValue(FCookies, 'g_AToken') <> '') then
         FCookies := FCookies + '; AToken=' + ExtractCookieValue(FCookies, 'g_AToken');
-      LblStatus.Caption     := 'Email login detected. Closing...';
-      ModalResult           := mrOK;
+      FinishLogin('Email login detected.');
       Exit;
     end;
 
@@ -675,8 +708,7 @@ begin
       if Pos('PARTNERKEY=', FCookies) = 0 then
         FCookies := FCookies + '; PARTNERKEY=3269';
 
-      LblStatus.Caption := 'Logged in. Closing...';
-      ModalResult := mrOK;
+      FinishLogin('Logged in.');
       Exit;
     end;
   end;
@@ -719,8 +751,7 @@ begin
     var Keys := '';
     for var K in ['NxLSession', 'AToken', 'g_AToken', 'NxGUN', 'NexonUserID'] do
       if ExtractCookieValue(FCookies, K) <> '' then Keys := Keys + K + ' ';
-    LblStatus.Caption := 'Session confirmed [' + Trim(Keys) + ']. Closing...';
-    ModalResult := mrOK;
+    FinishLogin('Session confirmed [' + Trim(Keys) + '].');
     Exit;
   end;
 end;
@@ -731,7 +762,31 @@ procedure TFormLoginWebView.BtnCancelClick(Sender: TObject);
 begin
   TimerCookies.Enabled := False;
   TimerInit.Enabled    := False;
-  ModalResult := mrCancel;
+  if FLoginDone then
+    ModalResult := mrOK
+  else
+    ModalResult := mrCancel;
+end;
+
+// Session captured. Ask before closing so the current page (e.g. Nexon's device
+// verification / code page) can be inspected or captured first. Choosing No keeps
+// the browser open; the Cancel button becomes "Done" and closing keeps the session.
+procedure TFormLoginWebView.FinishLogin(const Msg: string);
+begin
+  TimerCookies.Enabled := False;
+  FLoginDone := True; // set before the modal prompt — blocks re-entrant cookie callbacks
+  LblStatus.Caption := Msg;
+  if MessageDlg('Login successful.' + sLineBreak + sLineBreak +
+       'Close the login window now?' + sLineBreak +
+       '(No = keep this page open, e.g. to capture the device verification page. ' +
+       'Press Done when finished.)',
+       mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+    ModalResult := mrOK
+  else
+  begin
+    BtnCancel.Caption := 'Done';
+    LblStatus.Caption := 'Logged in. Session saved on Done — page left open for inspection.';
+  end;
 end;
 
 { Keep browser rendering in sync with window position. }

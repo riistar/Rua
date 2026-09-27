@@ -135,7 +135,7 @@ type
     procedure CheckSessionCached(const Profile, Cookies: string);
     procedure StartupSessionCheck;
     procedure LoadNews;
-    procedure PromptReLogin(const Profile: string);
+    procedure PromptReLogin(const Profile: string; Fresh: Boolean = False);
     procedure LaunchProfile(const Name: string);
     procedure RefreshTrayMenu;
     procedure TrayProfileClick(Sender: TObject);
@@ -1016,7 +1016,15 @@ begin
     if TryRefreshCookies(Prof, C, LogFn) then
     begin
       FSessionCache.Remove(Prof);
-      TThread.Queue(nil, procedure begin Log('Session valid.'); end);
+      // Session still valid — offer a fresh login anyway (e.g. to switch account
+      // or to walk through Nexon's device verification again).
+      TThread.Synchronize(nil, procedure
+      begin
+        Log('Session valid.');
+        if MessageDlg('Session for "' + Prof + '" is still valid.' + sLineBreak + sLineBreak +
+             'Log in again anyway?', mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+          PromptReLogin(Prof, True);
+      end);
     end
     else
       TThread.Synchronize(nil, procedure begin PromptReLogin(Prof); end);
@@ -1913,13 +1921,13 @@ begin
   end).Start;
 end;
 
-procedure TFormMain.PromptReLogin(const Profile: string);
+procedure TFormMain.PromptReLogin(const Profile: string; Fresh: Boolean);
 var
   NewCookies: string;
   Status: Integer;
 begin
   Log('Opening WebView2 login...');
-  if not TFormLoginWebView.Execute(NewCookies, Profile, True) then
+  if not TFormLoginWebView.Execute(NewCookies, Profile, Fresh) then
   begin
     Log('Re-login cancelled.');
     Exit;
@@ -1937,7 +1945,7 @@ begin
   else
   begin
     Log(Format('Session validation failed (HTTP %d) — trying again...', [Status]));
-    if TFormLoginWebView.Execute(NewCookies, Profile, True) then
+    if TFormLoginWebView.Execute(NewCookies, Profile, Fresh) then
     begin
       SaveRefreshedCookies(Profile, NewCookies);
       FSessionCache.Remove(Profile);
