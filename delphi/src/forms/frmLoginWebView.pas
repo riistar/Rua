@@ -1,9 +1,11 @@
 ﻿unit frmLoginWebView;
 {
-  Embedded WebView2 (Edge) browser for Nexon login.
+  Embedded browser for Nexon login.
   Navigates to nexon.com login. Polls for TpaSession / NxLSession every 1.5s.
   When either appears, exchanges / returns the session cookies and closes.
-  Session data persists across launches in %APPDATA%\Rua\WebView2.
+
+  Browser engine (uLoginBrowser): WebView2 on Windows, Chromium (CEF) under
+  Wine/Proton. Override with config.ini [Browser] Engine = auto | webview2 | cef.
 }
 
 interface
@@ -12,8 +14,7 @@ uses
   Winapi.Windows, Winapi.Messages,
   System.SysUtils, System.Classes, System.IOUtils,
   Vcl.Controls, Vcl.Forms, Vcl.ExtCtrls, Vcl.StdCtrls,
-  uWVBrowser, uWVWindowParent, uWVLoader,
-  uWVTypes, uWVInterfaces, uWVTypeLibrary;
+  uLoginBrowser;
 
 type
   TFormLoginWebView = class(TForm)
@@ -32,8 +33,9 @@ type
     procedure TimerInitTimer(Sender: TObject);
     procedure TimerCookiesTimer(Sender: TObject);
   private
-    FWVBrowser:      TWVBrowser;
-    FWVWindowParent: TWVWindowParent;
+    FBrowser:        TLoginBrowser;
+    FEngine:         TLoginEngine;
+    FPendingResult:  TModalResult; // ModalResult held while the browser shuts down asynchronously
     FCookies:        string;
     FProfileName:    string;
     FForceRelogin:   Boolean; // True → skip cached session, navigate to login page immediately
@@ -51,14 +53,14 @@ type
     FAltCookieUri:     Boolean; // Alternates between www.nexon.com and nxl.nxfs.nexon.com for GetCookies
     FClosePending:     Integer; // Countdown: NxLSession found, wait N more polls for cookies to stabilize before closing
     FChoicePanel:      TPanel;  // Login method chooser (Nexon Account vs SSO)
-    FOldTpaSession:    string;  // TpaSession value found in WebView2 cache at startup (stale — do not re-exchange)
-    procedure WVAfterCreated(Sender: TObject);
-    procedure WVGetCookiesCompleted(Sender: TObject; aResult: HRESULT;
-      const aCookieList: ICoreWebView2CookieList);
-    procedure WVNavigationCompleted(Sender: TObject; const aWebView: ICoreWebView2;
-      const aArgs: ICoreWebView2NavigationCompletedEventArgs);
-    procedure WVInitializationError(Sender: TObject; aErrorCode: HRESULT;
-      const aErrorMessage: wvstring);
+    FOldTpaSession:    string;  // TpaSession value found in the browser cache at startup (stale — do not re-exchange)
+    procedure BrowserReady(Sender: TObject);
+    procedure BrowserError(Sender: TObject; const Text: string);
+    procedure BrowserStatus(Sender: TObject; const Text: string);
+    procedure BrowserCookies(Sender: TObject; const Cookies: TLoginCookies);
+    procedure BrowserNavigationCompleted(Sender: TObject; Success: Boolean);
+    procedure BrowserClosed(Sender: TObject);
+    procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
     procedure BtnLoginChoiceClick(Sender: TObject);
 
   protected
@@ -77,8 +79,8 @@ implementation
 {$R *.dfm}
 
 uses
-  System.StrUtils,
-  uWVCoreWebView2CookieList, uWVCoreWebView2Cookie,
+  System.StrUtils, System.UITypes, Vcl.Dialogs,
+  uLoginBrowserWV, uLoginBrowserCEF, uCefRuntime,
   uNexonAPI, uDeviceId, uBrowserCookies;
 
 const
@@ -92,7 +94,7 @@ const
   // Launcher main page — after login the launcher JS redirects here.
   NXL_MAIN  = 'https://nxl.nxfs.nexon.com/nxl/main?index_tag=live';
 
-  // NexonLauncher UA — set globally on the WebView2. Required for launcher API to
+  // NexonLauncher UA — set globally on the browser. Required for launcher API to
   // return proper session tokens. Google SSO works with this UA (official launcher).
   NXL_UA = 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 '
          + '(KHTML, like Gecko) NexonLauncher/4.7.9 Chrome/108.0.5359.215 '
@@ -102,7 +104,7 @@ const
   // Prevents infinite redirect loop if the page doesn't set cookies.
   MAX_MAIN_NAV = 3;
 
-  // Injected before any page script via AddScriptToExecuteOnDocumentCreated.
+  // Injected before any page script via AddStartupScript.
   // Wraps fetch + XHR to intercept launcher auth responses. If the page calls
   // a launcher endpoint that returns NxLSession in its JSON body, the interceptor
   // writes it to document.cookie so GetCookies picks it up on the next poll.
@@ -146,22 +148,28 @@ const
 
 { ------------------------------------------------------------------ }
 
+// CEF under Wine; asks before the one-time runtime download, WebView2 if declined.
+function ChooseEngine: TLoginEngine;
+begin
+  Result := SelectLoginEngine;
+  if (Result = leCEF) and not CefRuntimeInstalled then
+    if MessageDlg(
+         'Logging in needs an embedded Chromium browser (~180 MB download, one time only).' +
+         sLineBreak + sLineBreak +
+         'Download it now?' + sLineBreak +
+         '(No = try the Edge WebView2 browser instead, which may not work under Wine.)',
+         mtConfirmation, [mbYes, mbNo], 0) <> mrYes then
+      Result := leWebView2;
+end;
+
 class function TFormLoginWebView.Execute(out Cookies: string;
   const ProfileName: string; ForceRelogin: Boolean): Boolean;
 var
   F: TFormLoginWebView;
 begin
-  // Initialize WebView2 loader on first use (lazy so startup is unaffected).
-  if not Assigned(GlobalWebView2Loader) then
-  begin
-    GlobalWebView2Loader := TWVLoader.Create(nil);
-    GlobalWebView2Loader.UserDataFolder :=
-      GetEnvironmentVariable('APPDATA') + '\Rua\WebView2';
-    GlobalWebView2Loader.StartWebView2;
-  end;
-
   F := TFormLoginWebView.Create(nil);
   try
+    F.FEngine       := ChooseEngine;
     F.FProfileName  := ProfileName;
     F.FForceRelogin := ForceRelogin;
     Result := F.ShowModal = mrOK;
@@ -175,16 +183,15 @@ end;
 
 procedure TFormLoginWebView.FormCreate(Sender: TObject);
 begin
-  // TWVWindowParent hosts the WebView2 child window.
-  FWVWindowParent := TWVWindowParent.Create(Self);
-  FWVWindowParent.Parent := PnlBrowser;
-  FWVWindowParent.Align  := alClient;
+  // Wired in code — the IDE can silently drop OnCloseQuery from the DFM.
+  Self.OnCloseQuery := FormCloseQuery;
 
-  // Login method choice panel
+  // Login method choice panel (shown once the browser is ready)
   FChoicePanel := TPanel.Create(Self);
   FChoicePanel.Parent := PnlBrowser;
   FChoicePanel.Align  := alClient;
   FChoicePanel.BevelOuter := bvNone;
+  FChoicePanel.Visible := False;
   var LblPrompt := TLabel.Create(Self);
   LblPrompt.Parent := FChoicePanel;
   LblPrompt.Align := alTop;
@@ -207,76 +214,49 @@ begin
   BtnSSO.Font.Size := 12;
   BtnSSO.Tag := 1;
   BtnSSO.OnClick := BtnLoginChoiceClick;
-
-  FWVBrowser := TWVBrowser.Create(Self);
-  FWVBrowser.OnAfterCreated          := WVAfterCreated;
-  FWVBrowser.OnGetCookiesCompleted   := WVGetCookiesCompleted;
-  FWVBrowser.OnNavigationCompleted   := WVNavigationCompleted;
-  FWVBrowser.OnInitializationError   := WVInitializationError;
-
-  // Link browser to window parent so it knows where to render.
-  FWVWindowParent.Browser := FWVBrowser;
 end;
 
 procedure TFormLoginWebView.FormDestroy(Sender: TObject);
 begin
-  FDestroying          := True; // guard all async WebView2 callbacks
+  FDestroying          := True; // guard all async browser callbacks
   TimerCookies.Enabled := False;
   TimerInit.Enabled    := False;
-  // FWVBrowser and FWVWindowParent owned by Self — VCL destructor handles cleanup.
+  // FBrowser owned by Self — VCL destructor handles cleanup.
 end;
 
 procedure TFormLoginWebView.FormShow(Sender: TObject);
 begin
-  if not Assigned(GlobalWebView2Loader) then
-  begin
-    LblStatus.Caption := 'WebView2 loader not initialized.';
-    Exit;
-  end;
-  if GlobalWebView2Loader.InitializationError then
-  begin
-    LblStatus.Caption := 'WebView2 error: ' + GlobalWebView2Loader.ErrorMessage;
-    Exit;
-  end;
-  if GlobalWebView2Loader.Initialized then
-  begin
-    FWVBrowser.CreateBrowser(FWVWindowParent.Handle);
-end
+  if Assigned(FBrowser) then Exit;
+  if FEngine = leCEF then
+    FBrowser := TLoginBrowserCEF.Create(Self)
   else
-    TimerInit.Enabled := True;
+    FBrowser := TLoginBrowserWV.Create(Self);
+  FBrowser.OnReady               := BrowserReady;
+  FBrowser.OnError               := BrowserError;
+  FBrowser.OnStatus              := BrowserStatus;
+  FBrowser.OnCookies             := BrowserCookies;
+  FBrowser.OnNavigationCompleted := BrowserNavigationCompleted;
+  FBrowser.OnClosed              := BrowserClosed;
+  LblStatus.Caption := 'Starting ' + FBrowser.EngineName + '...';
+  FBrowser.Start(PnlBrowser);
 end;
 
-{ ------------------------------------------------------------------ }
-{  Initialization polling (waits for Edge runtime to be ready)       }
-{ ------------------------------------------------------------------ }
-
+// Unused — engine start-up polling lives in the TLoginBrowser backends.
 procedure TFormLoginWebView.TimerInitTimer(Sender: TObject);
 begin
   TimerInit.Enabled := False;
-  if FDestroying or not Assigned(GlobalWebView2Loader) then Exit;
-  if GlobalWebView2Loader.InitializationError then
-  begin
-    LblStatus.Caption := 'WebView2 error: ' + GlobalWebView2Loader.ErrorMessage;
-    Exit;
-  end;
-  if GlobalWebView2Loader.Initialized then
-  begin
-    FWVBrowser.CreateBrowser(FWVWindowParent.Handle);
-end
-  else
-    TimerInit.Enabled := True;
 end;
 
 { ------------------------------------------------------------------ }
 {  Browser lifecycle                                                  }
 { ------------------------------------------------------------------ }
 
-procedure TFormLoginWebView.WVAfterCreated(Sender: TObject);
+procedure TFormLoginWebView.BrowserReady(Sender: TObject);
 begin
-  FWVWindowParent.UpdateSize;
+  if FDestroying then Exit;
 
-    // Inject interceptor before any page scripts run.
-  FWVBrowser.AddScriptToExecuteOnDocumentCreated(INTERCEPT_JS);
+  // Inject interceptor before any page scripts run.
+  FBrowser.AddStartupScript(INTERCEPT_JS);
 
   // Show the login method choice panel. User picks Nexon Account or SSO,
   // then navigation happens with the appropriate User-Agent.
@@ -284,11 +264,44 @@ begin
   FChoicePanel.Show;
   FChoicePanel.BringToFront;
 
-
-
   // Check both www.nexon.com and nxl.nxfs.nexon.com URIs for existing session cookies.
   // Session cookies may be host-only for either domain depending on Set-Cookie domain attr.
-  FWVBrowser.GetCookies('https://www.nexon.com');
+  FBrowser.RequestCookies('https://www.nexon.com');
+end;
+
+procedure TFormLoginWebView.BrowserError(Sender: TObject; const Text: string);
+begin
+  if FDestroying then Exit;
+  TimerCookies.Enabled := False;
+  FChoicePanel.Hide;
+  LblStatus.Caption := Text;
+end;
+
+procedure TFormLoginWebView.BrowserStatus(Sender: TObject; const Text: string);
+begin
+  if FDestroying then Exit;
+  LblStatus.Caption := Text;
+end;
+
+// Browser finished its async shutdown — complete the close that was deferred.
+procedure TFormLoginWebView.BrowserClosed(Sender: TObject);
+begin
+  if FDestroying then Exit;
+  if FPendingResult = mrNone then
+    FPendingResult := mrCancel;
+  ModalResult := FPendingResult;
+end;
+
+procedure TFormLoginWebView.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
+begin
+  if Assigned(FBrowser) and not FBrowser.RequestClose then
+  begin
+    // Engine needs to shut down first (CEF) — hold the result until OnClosed.
+    TimerCookies.Enabled := False;
+    if ModalResult <> mrNone then
+      FPendingResult := ModalResult;
+    CanClose := False;
+  end;
 end;
 
 // Fires when any top-level navigation completes.
@@ -296,20 +309,28 @@ end;
 // - nxl.nxfs.nexon.com/nxl/main = post-login success — grab cookies.
 // - Any other nexon/nxfs page = potential post-login redirect — grab cookies.
 // Trigger GetCookies immediately to capture NxLSession without waiting for the timer.
-procedure TFormLoginWebView.WVNavigationCompleted(Sender: TObject;
-  const aWebView: ICoreWebView2; const aArgs: ICoreWebView2NavigationCompletedEventArgs);
+// Nexon's post-login verification steps (new-device confirmation, OTP/MFA),
+// e.g. /account/en/login/verify-account. Session cookies can already exist while
+// one is showing, so login must not be treated as finished there.
+function IsVerificationPage(const SrcLower: string): Boolean;
+begin
+  Result := (Pos('nexon.com', SrcLower) > 0) and (
+    (Pos('/verify', SrcLower) > 0) or (Pos('verification', SrcLower) > 0) or
+    (Pos('/otp', SrcLower) > 0) or (Pos('/mfa', SrcLower) > 0) or
+    (Pos('/2fa', SrcLower) > 0) or (Pos('two-step', SrcLower) > 0) or
+    (Pos('/device', SrcLower) > 0));
+end;
+
+procedure TFormLoginWebView.BrowserNavigationCompleted(Sender: TObject; Success: Boolean);
 var
-  IsSuccessInt: Integer;
-  Src:          wvstring;
-  SrcLower:     string;
+  Src:      string;
+  SrcLower: string;
 begin
   if FDestroying then Exit;
   if FExchanging then Exit;
   if not FSilentChecked then Exit; // still in initial check phase
-  if aArgs = nil then Exit;
-  if aArgs.Get_IsSuccess(IsSuccessInt) <> S_OK then Exit;
-  if IsSuccessInt = 0 then Exit;
-  Src := FWVBrowser.Source;
+  if not Success then Exit;
+  Src := FBrowser.Source;
   SrcLower := LowerCase(Src);
   LblUrl.Caption := Src;
 
@@ -321,19 +342,25 @@ begin
       TEncoding.UTF8);
   except end;
 
-
+  // Verification pages share the /account/en/login prefix but must be left
+  // untouched: the SSO branch below would hide the code input.
+  if IsVerificationPage(SrcLower) then
+  begin
+    LblStatus.Caption := 'Complete the Nexon verification in the page below...';
+    Exit;
+  end;
 
   // Login pages — hide irrelevant sections based on chosen login method.
   if (Pos('/nxl/login', SrcLower) > 0) or (Pos('/account/en/login', SrcLower) > 0) then
   begin
-    if FWVBrowser.UserAgent = NXL_UA then
+    if FBrowser.UserAgent = NXL_UA then
       // Nexon Account: hide SSO buttons
-      FWVBrowser.ExecuteScript(
+      FBrowser.ExecuteScript(
         'try{var e=document.querySelector(''.third-party-container'');'+
         'if(e)e.style.display=''none'';}catch(ex){}')
     else
       // SSO: hide email/password form
-      FWVBrowser.ExecuteScript(
+      FBrowser.ExecuteScript(
         'try{var e=document.querySelector(''.input-container'');'+
         'if(e)e.style.display=''none'';}catch(ex){}');
     Exit;
@@ -343,32 +370,24 @@ begin
   // else. This speeds up form close after successful login.
   // Safe URLs: /nxl/main (launcher), /main (nexon web post-login).
   if (Pos('/main', SrcLower) > 0) then
-    FWVBrowser.GetCookies('https://www.nexon.com');
-end;
-
-procedure TFormLoginWebView.WVInitializationError(Sender: TObject;
-  aErrorCode: HRESULT; const aErrorMessage: wvstring);
-begin
-  TimerInit.Enabled    := False;
-  TimerCookies.Enabled := False;
-  LblStatus.Caption    := 'WebView2 error: ' + aErrorMessage;
+    FBrowser.RequestCookies('https://www.nexon.com');
 end;
 
 // Login method choice: Tag=0 = Nexon Account (needs NexonLauncher UA),
-// Tag=1 = SSO (keeps default WebView2 UA).
+// Tag=1 = SSO (keeps the engine's default UA).
 procedure TFormLoginWebView.BtnLoginChoiceClick(Sender: TObject);
 begin
   if FChoicePanel <> nil then
     FChoicePanel.Hide;
   if TButton(Sender).Tag = 0 then
   begin
-    FWVBrowser.UserAgent := NXL_UA;
+    FBrowser.SetUserAgent(NXL_UA);
     LblStatus.Caption := 'Loading Nexon login...';
   end
   else
     LblStatus.Caption := 'Loading SSO login...';
   TimerCookies.Enabled := True;
-  FWVBrowser.Navigate(NEXON_URL);
+  FBrowser.Navigate(NEXON_URL);
 end;
 
 { ------------------------------------------------------------------ }
@@ -377,27 +396,24 @@ end;
 
 procedure TFormLoginWebView.TimerCookiesTimer(Sender: TObject);
 begin
-  if FDestroying or FExchanging or not FWVBrowser.Initialized then Exit;
+  if FDestroying or FExchanging or not Assigned(FBrowser) or not FBrowser.Ready then Exit;
   FAltCookieUri := not FAltCookieUri;
   // Alternate between www.nexon.com and nxl.nxfs.nexon.com URIs.
   // Session cookies may be host-only for either domain; polling both ensures capture.
   if FAltCookieUri then
-    FWVBrowser.GetCookies('https://www.nexon.com')
+    FBrowser.RequestCookies('https://www.nexon.com')
   else
-    FWVBrowser.GetCookies('https://nxl.nxfs.nexon.com');
+    FBrowser.RequestCookies('https://nxl.nxfs.nexon.com');
 end;
 
-procedure TFormLoginWebView.WVGetCookiesCompleted(Sender: TObject;
-  aResult: HRESULT; const aCookieList: ICoreWebView2CookieList);
+procedure TFormLoginWebView.BrowserCookies(Sender: TObject; const Cookies: TLoginCookies);
 const
   WANT: array[0..10] of string = (
     'NxLSession', 'AToken', 'g_AToken', 'NexonUserID', 'id_token', 'TpaSession', 'NxGUN',
     'arenaSid', 'tpatype', 'PARTNERKEY', 'FromMarvelMachine');
   TRUST_MAX_RETRIES = 4; // auto-retries of a 20027 (device not trusted) TpaSession exchange
 var
-  CookieList:  TCoreWebView2CookieList;
-  Cookie:      TCoreWebView2Cookie;
-  I:           Cardinal;
+  Cookie:      TLoginCookie;
   SB:          TStringBuilder;
   Raw, TpaSession, DebugNames, CurSrc: string;
   HttpStatus:  Integer;
@@ -405,22 +421,15 @@ var
   IsPostLogin: Boolean;
   WasTrustRetry: Boolean;
 begin
-  if FDestroying then Exit;
-  if (aResult <> S_OK) or (aCookieList = nil) or FExchanging then Exit;
+  if FDestroying or FExchanging then Exit;
 
   // Snapshot and reset immediately to be re-entry safe.
   IsPostLogin       := FPostLoginCapture;
   FPostLoginCapture := False;
 
-  CookieList := TCoreWebView2CookieList.Create(aCookieList);
-
-  Cookie     := TCoreWebView2Cookie.Create(nil);
-  SB         := TStringBuilder.Create;
+  SB := TStringBuilder.Create;
   try
-    I := 0;
-    while I < CookieList.Count do
-    begin
-      Cookie.BaseIntf := CookieList.Items[I];
+    for Cookie in Cookies do
       if Pos('nexon', LowerCase(Cookie.Domain)) > 0 then
       begin
         // Post-login: collect ALL nexon-domain cookies so we don't miss session tokens
@@ -431,11 +440,12 @@ begin
           SB.Append(Cookie.Name + '=' + Cookie.Value);
         end;
       end;
-      Inc(I);
-    end;
     Raw := SB.ToString;
+  finally
+    SB.Free;
+  end;
 
-  CurSrc := LowerCase(FWVBrowser.Source);
+  CurSrc := LowerCase(FBrowser.Source);
 
   // Skip processing on non-nexon pages (SSO OAuth providers).
   // The TPA path, fast path, and arenaSid handler all have their own URL guards
@@ -446,32 +456,23 @@ begin
     Exit;
   end;
 
-  // Build debug name list so the early-exit message shows what WebView2 actually has.
-  if IsPostLogin then
+  // Device confirmation / OTP still pending: the cookies may look complete, but
+  // closing now aborts the verification. Keep polling until the page moves on.
+  if FSilentChecked and IsVerificationPage(CurSrc) then
   begin
-    var DBG := TStringBuilder.Create;
-    try
-      var J: Cardinal := 0;
-      while J < CookieList.Count do
+    LblStatus.Caption := 'Complete the Nexon verification in the page below...';
+    TimerCookies.Enabled := True;
+    Exit;
+  end;
+
+  // Build debug name list so the early-exit message shows what the browser actually has.
+  if IsPostLogin then
+    for Cookie in Cookies do
+      if Pos('nexon', LowerCase(Cookie.Domain)) > 0 then
       begin
-        Cookie.BaseIntf := CookieList.Items[J];
-        if Pos('nexon', LowerCase(Cookie.Domain)) > 0 then
-        begin
-          if DBG.Length > 0 then DBG.Append(', ');
-          DBG.Append(Cookie.Name + '@' + Cookie.Domain);
-        end;
-        Inc(J);
+        if DebugNames <> '' then DebugNames := DebugNames + ', ';
+        DebugNames := DebugNames + Cookie.Name + '@' + Cookie.Domain;
       end;
-      DebugNames := DBG.ToString;
-    finally
-      DBG.Free;
-    end;
-  end;
-  finally
-    SB.Free;
-    FreeAndNil(Cookie);
-    FreeAndNil(CookieList);
-  end;
 
   // Post-login path: NavigationCompleted fired on nexon.com after web login.
   // Check for session tokens. NxLSession has domain=www.nexon.com (not .nexon.com),
@@ -522,7 +523,7 @@ begin
     end;
   end;
 
-  // Silent-check gate: first call after WVAfterCreated, before we navigate to login page.
+  // Silent-check gate: first call after BrowserReady, before we navigate to login page.
   if not FSilentChecked then
   begin
     FSilentChecked := True;
@@ -733,19 +734,19 @@ begin
   ModalResult := mrCancel;
 end;
 
-{ Keep WebView2 rendering in sync with window position. }
+{ Keep browser rendering in sync with window position. }
 procedure TFormLoginWebView.WMMove(var Msg: TWMMove);
 begin
   inherited;
-  if Assigned(FWVBrowser) then
-    FWVBrowser.NotifyParentWindowPositionChanged;
+  if Assigned(FBrowser) then
+    FBrowser.NotifyMoved;
 end;
 
 procedure TFormLoginWebView.WMMoving(var Msg: TMessage);
 begin
   inherited;
-  if Assigned(FWVBrowser) then
-    FWVBrowser.NotifyParentWindowPositionChanged;
+  if Assigned(FBrowser) then
+    FBrowser.NotifyMoved;
 end;
 
 { ------------------------------------------------------------------ }

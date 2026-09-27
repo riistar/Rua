@@ -2,7 +2,9 @@
 
 A lightweight 3rd-party launcher for Mabinogi NA that replaces the official Nexon Launcher entirely.
 
-No heavy Electron wrapper, no CEF browser, no background services. Just a small native Windows app that logs you in and starts the game.
+No heavy Electron wrapper, no background services. Just a small native Windows app that logs you in and starts the game.
+
+**Linux / Steam Deck:** runs under Wine, Proton and Lutris. See [README-LINUX.md](README-LINUX.md).
 
 ## Screenshots
 
@@ -30,11 +32,15 @@ This isn't a wrapper or a mod. It's a full replacement for the official launcher
 
 ## Building
 
-Requires: https://github.com/salvadordf/WebView4Delphi
+Requires: https://github.com/salvadordf/WebView4Delphi and https://github.com/salvadordf/CEF4Delphi (vendored in `delphi/src/`)
 
 Open `delphi/Rua.dproj` in Delphi 12.1+ and build (Win64 target).
 Or run `powershell -File build/delphi.ps1` to build all projects.
 Requires Windows 10 x64+ and the WebView2 Runtime (ships with Windows 11).
+
+Wine release packaging:
+- `build/package-cef-runtime.ps1`: builds `release/cef-runtime-<ver>-win64.zip`. Publish it on a GitHub release tagged `cef-<ver>`; Rua downloads it on demand.
+- `build/package-wine.ps1` (optional, offline bundles): builds `release/Rua-<ver>-win64-wine.zip`, which is Rua plus a bundled `cef/` folder. It is not published.
 
 ## Credits
 

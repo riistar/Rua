@@ -5,7 +5,7 @@ interface
 uses
   Winapi.Windows, Winapi.Messages,
   System.Classes, System.Types, System.UITypes, System.Math,
-  Vcl.Controls, Vcl.ComCtrls, Vcl.Graphics, Vcl.Imaging.Jpeg;
+  Vcl.Controls, Vcl.ComCtrls, Vcl.Graphics, Vcl.ExtCtrls, Vcl.Themes, Vcl.Imaging.Jpeg;
 
 type
   // Horizontal alignment of the header image (used when not stretching/tiling).
@@ -30,6 +30,7 @@ type
   THeaderPageControl = class(TPageControl)
   private
     FHeaderImage: TPicture;
+    FOverlay: TImage;
     FHeaderImageVisible: Boolean;
     FHeaderImageStretch: Boolean;
     FHeaderImageTile: Boolean;
@@ -46,12 +47,20 @@ type
     function AlignedDest(const AWidth, AHeight: Integer): TRect;
     procedure DrawStripImage(const ARect: TRect);
     procedure DrawTabContent(const ARect: TRect; AIndex: Integer; ASelected: Boolean);
+    procedure DrawOverlay;
+    procedure WMPaint(var Message: TWMPaint); message WM_PAINT;
   protected
     procedure DrawTab(AIndex: Integer; const ARect: TRect; ASelected: Boolean); override;
     procedure Loaded; override;
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
+    // Sibling TImage (same parent) that overlaps this control. A TImage paints
+    // on the parent canvas, so it ends up under this window. VCL styles paint
+    // the parent background into the empty tab strip, which lets it show
+    // through. The system theme ("Windows", and always under Wine) does not,
+    // so in that case the image is painted again here, on top.
+    property Overlay: TImage read FOverlay write FOverlay;
   published
     property HeaderHeight: Integer read FHeaderHeight write SetHeaderHeight default 0;
     property HeaderImage: TPicture read FHeaderImage write SetHeaderImage;
@@ -283,6 +292,35 @@ begin
   finally
     Canvas.Brush.Style := bsSolid;
     Canvas.Font.Style := SaveFontStyle;
+  end;
+end;
+
+procedure THeaderPageControl.WMPaint(var Message: TWMPaint);
+begin
+  inherited;
+  DrawOverlay;
+end;
+
+procedure THeaderPageControl.DrawOverlay;
+var
+  C: TControlCanvas;
+  R: TRect;
+begin
+  if (FOverlay = nil) or not FOverlay.Visible or (FOverlay.Parent <> Parent) or
+     (FOverlay.Picture.Graphic = nil) or TStyleManager.IsCustomStyleActive then
+    Exit;
+  R := FOverlay.BoundsRect;
+  R.Offset(-Left, -Top);
+  if not R.IntersectsWith(ClientRect) then
+    Exit;
+  if not FOverlay.Stretch then
+    R := Rect(R.Left, R.Top, R.Left + FOverlay.Picture.Width, R.Top + FOverlay.Picture.Height);
+  C := TControlCanvas.Create;
+  try
+    C.Control := Self;
+    C.StretchDraw(R, FOverlay.Picture.Graphic);
+  finally
+    C.Free;
   end;
 end;
 

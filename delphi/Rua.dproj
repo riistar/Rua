@@ -67,7 +67,7 @@
         <DCC_ImageBase>00400000</DCC_ImageBase>
         <SanitizedProjectName>Rua</SanitizedProjectName>
         <DCC_Namespace>Vcl;Vcl.Imaging;Vcl.Touch;Vcl.Samples;Vcl.Shell;System;Xml;Data;Datasnap;Web;Soap;$(DCC_Namespace)</DCC_Namespace>
-        <DCC_UnitSearchPath>src\forms;src\units;src\WebView4Delphi\source;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>src\forms;src\units;src\WebView4Delphi\source;src\CEF4Delphi\source;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
         <VerInfo_MajorVer>1</VerInfo_MajorVer>
         <VerInfo_MinorVer>5</VerInfo_MinorVer>
         <VerInfo_Release>2</VerInfo_Release>
@@ -161,6 +161,10 @@
         <DCCReference Include="src\units\uGameLaunch.pas"/>
         <DCCReference Include="src\units\uBrowserCookies.pas"/>
         <DCCReference Include="src\units\uNxlPatcher.pas"/>
+        <DCCReference Include="src\units\uLoginBrowser.pas"/>
+        <DCCReference Include="src\units\uLoginBrowserWV.pas"/>
+        <DCCReference Include="src\units\uLoginBrowserCEF.pas"/>
+        <DCCReference Include="src\units\uCefRuntime.pas"/>
         <DCCReference Include="src\units\uHeaderPageControl.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

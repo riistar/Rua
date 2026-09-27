@@ -6,7 +6,7 @@ uses
   Winapi.Windows, System.SysUtils, System.Classes, System.IOUtils,
   Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Dialogs,
   Vcl.StdCtrls, Vcl.ExtCtrls,
-  Vcl.Themes, uIgnoreList;
+  Vcl.Themes, uIgnoreList, uLoginBrowser;
 
 type
   TFormSettings = class(TForm)
@@ -120,6 +120,17 @@ var
   StyleDir, CurTheme, S: string;
   List: TStringList;
 begin
+  // Under Wine only the system theme renders correctly, so it is the only choice.
+  if IsRunningUnderWine then
+  begin
+    CmbTheme.Items.Text := WINE_THEME;
+    CmbTheme.ItemIndex := 0;
+    CmbTheme.Enabled := False;
+    CmbTheme.Hint := 'Other themes do not render correctly under Wine';
+    CmbTheme.ShowHint := True;
+    Exit;
+  end;
+
   StyleDir := ExtractFilePath(ParamStr(0)) + 'styles';
   if TDirectory.Exists(StyleDir) then
     for var SF in TDirectory.GetFiles(StyleDir, '*.vsf') do

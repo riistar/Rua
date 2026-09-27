@@ -19,12 +19,24 @@ uses
   uGameLaunch   in 'src\units\uGameLaunch.pas',
   uBrowserCookies in 'src\units\uBrowserCookies.pas',
   uNxlPatcher     in 'src\units\uNxlPatcher.pas',
+  uLoginBrowser    in 'src\units\uLoginBrowser.pas',
+  uLoginBrowserWV  in 'src\units\uLoginBrowserWV.pas',
+  uLoginBrowserCEF in 'src\units\uLoginBrowserCEF.pas',
+  uCefRuntime      in 'src\units\uCefRuntime.pas',
   Vcl.Themes,
   Vcl.Styles;
 
 {$R *.res}
 
 begin
+  // CEF subprocess mode: Chromium relaunches Rua.exe with --type=renderer|gpu-process|...
+  // for its helper processes (login browser under Wine). Must run before anything else.
+  if IsCefSubProcess then
+  begin
+    RunCefSubProcess;
+    Halt(0);
+  end;
+
   // Stub mode: we are running as a copy named nexon_client.exe.
   // nexon_api_x64.dll scans for nexon_client.exe by process name before
   // touching the named pipe. We satisfy that check without running the
@@ -61,4 +73,5 @@ begin
   Application.Title := 'Rua';
   Application.CreateForm(TFormMain, FormMain);
   Application.Run;
+  ShutdownCefRuntime; // no-op unless the CEF login browser was used
 end.

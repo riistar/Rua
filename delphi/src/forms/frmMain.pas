@@ -166,9 +166,9 @@ implementation
 {$R ..\..\tray_icon.res}
 
 uses
-  Vcl.FileCtrl, Vcl.Themes, Winapi.ShellAPI,
+  Vcl.FileCtrl, Vcl.Themes, Winapi.ShellAPI, System.Win.Registry,
   frmLogin, frmLoginWebView, frmProfile, frmProfileEdit, frmSettings, frmFolderSelect, frmUpdateSelect,
-  uBrowserCookies, uNxlPatcher, uCredStore;
+  uBrowserCookies, uNxlPatcher, uCredStore, uLoginBrowser;
 
 const
   DEFAULT_PRODUCT = 10200; // Mabinogi
@@ -238,11 +238,10 @@ begin
     'Nexon Launcher\appconfig.json');
 end;
 
-function FindGameExe(ProductId: Integer): string;
+function FindGameExeFromNexonConfig(ProductId: Integer): string;
 var
   CfgPath, Raw: string;
   J, Apps, App: TJSONObject;
-  Keys:         TArray<string>;
 begin
   Result := '';
   CfgPath := AppConfigPath;
@@ -263,6 +262,132 @@ begin
   finally
     J.Free;
   end;
+  if (Result <> '') and not TFile.Exists(Result) then
+    Result := '';
+end;
+
+// Client.exe in an install folder: either directly or under appdata\.
+function GameExeInDir(const Dir: string): string;
+begin
+  Result := '';
+  if Dir = '' then Exit;
+  for var Sub in ['appdata\Client.exe', 'Client.exe'] do
+    if TFile.Exists(TPath.Combine(Dir, Sub)) then
+      Exit(TPath.Combine(Dir, Sub));
+end;
+
+// Uninstall entries (HKLM/HKCU, 64 and 32-bit views) whose DisplayName
+// mentions Mabinogi, via their InstallLocation.
+function FindGameExeFromUninstall: string;
+const
+  UNINST = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall';
+  VIEWS: array[0..1] of Cardinal = (KEY_WOW64_64KEY, KEY_WOW64_32KEY);
+var
+  Reg: TRegistry;
+  SubKeys: TStringList;
+begin
+  Result := '';
+  for var Root in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] do
+    for var View in VIEWS do
+    begin
+      Reg := TRegistry.Create(KEY_READ or View);
+      SubKeys := TStringList.Create;
+      try
+        Reg.RootKey := Root;
+        if not Reg.OpenKeyReadOnly(UNINST) then Continue;
+        Reg.GetKeyNames(SubKeys);
+        Reg.CloseKey;
+        for var K in SubKeys do
+          if Reg.OpenKeyReadOnly(UNINST + '\' + K) then
+          try
+            if Reg.ValueExists('DisplayName') and
+               (Pos('mabinogi', Reg.ReadString('DisplayName').ToLower) > 0) and
+               Reg.ValueExists('InstallLocation') then
+              Result := GameExeInDir(Reg.ReadString('InstallLocation'));
+          finally
+            Reg.CloseKey;
+          end;
+        if Result <> '' then Exit;
+      finally
+        SubKeys.Free;
+        Reg.Free;
+      end;
+    end;
+end;
+
+// Well-known install folders on every local drive. Under Wine also looks
+// inside other prefixes in the Linux home dir (Lutris, Steam/Proton, Bottles,
+// plain ~/.wine*), reached through Z:.
+function FindGameExeOnDisk: string;
+const
+  DIRS: array[0..6] of string = (
+    'Nexon\Library\mabinogi',
+    'Program Files\Nexon\Library\mabinogi',
+    'Program Files (x86)\Nexon\Library\mabinogi',
+    'Nexon\Mabinogi',
+    'Program Files\Nexon\Mabinogi',
+    'Program Files (x86)\Nexon\Mabinogi',
+    'Program Files (x86)\Mabinogi');
+var
+  Roots: TList<string>;
+
+  procedure AddPrefixes(const Parent, Mask, Inner: string);
+  begin
+    try
+      if TDirectory.Exists(Parent) then
+        for var D in TDirectory.GetDirectories(Parent, Mask) do
+          Roots.Add(TPath.Combine(TPath.Combine(D, Inner), 'drive_c'));
+    except
+      // unreadable dir: skip
+    end;
+  end;
+
+begin
+  Result := '';
+  Roots := TList<string>.Create;
+  try
+    // Local drives, skipping Z: (under Wine that is the whole Linux root).
+    var Mask := GetLogicalDrives;
+    for var I := 2 to 24 do // C..Y
+      if (Mask and (1 shl I)) <> 0 then
+      begin
+        var Drv := Char(Ord('A') + I) + ':\';
+        if GetDriveType(PChar(Drv)) = DRIVE_FIXED then
+          Roots.Add(Drv);
+      end;
+
+    if IsRunningUnderWine then
+    begin
+      var Home := GetEnvironmentVariable('HOME');
+      if Home.StartsWith('/') then
+      begin
+        Home := 'Z:' + Home.Replace('/', '\');
+        AddPrefixes(Home, '.wine*', '');
+        AddPrefixes(TPath.Combine(Home, 'Games'), '*', '');
+        AddPrefixes(TPath.Combine(Home, '.local\share\bottles\bottles'), '*', '');
+        AddPrefixes(TPath.Combine(Home, '.local\share\Steam\steamapps\compatdata'), '*', 'pfx');
+        AddPrefixes(TPath.Combine(Home, '.steam\steam\steamapps\compatdata'), '*', 'pfx');
+        AddPrefixes(TPath.Combine(Home,
+          '.var\app\com.valvesoftware.Steam\.local\share\Steam\steamapps\compatdata'), '*', 'pfx');
+      end;
+    end;
+
+    for var R in Roots do
+      for var D in DIRS do
+      begin
+        Result := GameExeInDir(TPath.Combine(R, D));
+        if Result <> '' then Exit;
+      end;
+  finally
+    Roots.Free;
+  end;
+end;
+
+function FindGameExe(ProductId: Integer): string;
+begin
+  Result := FindGameExeFromNexonConfig(ProductId);
+  if Result = '' then Result := FindGameExeFromUninstall;
+  if Result = '' then Result := FindGameExeOnDisk;
 end;
 
 { TFormMain }
@@ -277,6 +402,10 @@ function ReadThemeFromConfig: string;
 var
   INI: TIniFile;
 begin
+  // Custom VCL styles render broken under Wine (invisible buttons etc.), so
+  // Wine always gets the system theme regardless of what is saved.
+  if IsRunningUnderWine then
+    Exit(WINE_THEME);
   Result := '';
   try
     INI := TIniFile.Create(ConfigPath);
@@ -310,7 +439,8 @@ begin
     FSortAlpha      := INI.ReadBool('UI', 'SortAlpha', False);
     FVerbose := INI.ReadBool('UI', 'Verbose', False);
     FTheme := INI.ReadString('UI', 'Theme', '');
-    if FTheme <> '' then TStyleManager.TrySetStyle(FTheme);
+    if IsRunningUnderWine then TStyleManager.TrySetStyle(WINE_THEME)
+    else if FTheme <> '' then TStyleManager.TrySetStyle(FTheme);
   finally
     INI.Free;
   end;
@@ -455,8 +585,9 @@ begin
   //Image1.Visible := False;        // news feed (NewsScroll) replaces the hero art
   RefreshProfiles;   // calls RefreshTrayMenu too
   StartupSessionCheck;
-  AutoDetectGame;
   LoadConfig;        // applies the saved Vcl theme
+  if Trim(FDefaultGameExe) = '' then
+    AutoDetectGame;
   SetAutoStart(FAutoStart);
   if FAutoCheck then
     DoCheckAndUpdate(True);
@@ -506,6 +637,7 @@ begin
   OldPC.Free;
   PageControl1   := NewPC;
   FHeaderControl := NewPC;
+  NewPC.Overlay  := Rua; // repaint the logo on top under the system theme
 
   // Header configuration. HeaderHeight grows the tab-strip band without growing
   // the tab captions. Set a picture on HeaderImage to draw an aligned background
@@ -599,7 +731,11 @@ var
 begin
   Path := FindGameExe(DEFAULT_PRODUCT);
   if Path <> '' then
+  begin
     FDefaultGameExe := Path;
+    Log('Game found: ' + Path);
+    SaveConfig;
+  end;
 end;
 
 procedure TFormMain.RefreshProfiles;
@@ -749,6 +885,20 @@ begin
     Log('Captured keys: [' + Trim(Keys) + ']');
   end;
   RefreshProfiles;
+
+  // First profile on a fresh install (typical under Wine): find the game now
+  // instead of failing later at launch.
+  if Trim(FDefaultGameExe) = '' then
+  begin
+    AutoDetectGame;
+    if Trim(FDefaultGameExe) = '' then
+    begin
+      Log('Game not found automatically.');
+      if MessageDlg('Mabinogi''s Client.exe was not found automatically.' + sLineBreak +
+         'Open Settings to set the game path now?', mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+        MenuSettingsClick(Self);
+    end;
+  end;
 end;
 
 procedure TFormMain.MenuEditProfileClick(Sender: TObject);
