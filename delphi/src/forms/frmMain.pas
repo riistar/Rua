@@ -111,6 +111,10 @@ type
     FSessionTimer:    TTimer;   // live session-time ticker
     FCleanupOnExit:   Boolean;
     FInRefreshProfiles: Boolean; // suppress session check during auto-select
+    FBeforePatch:   string;
+    FAfterPatch:    string;
+    FBeforeLaunch:  string;
+    FAfterLaunch:   string;
     FNewsLoaded: Boolean;        // feed loaded once, from FormShow (after form is themed/drawn)
     FNews:       TArray<TNewsItem>;
     FNewsFeed:   TNewsFeed;       // rendered into NewsScroll at runtime (TNewsFeed is not DFM-streamable)
@@ -168,7 +172,7 @@ implementation
 uses
   Vcl.FileCtrl, Vcl.Themes, Winapi.ShellAPI, System.Win.Registry,
   frmLogin, frmLoginWebView, frmProfile, frmProfileEdit, frmSettings, frmFolderSelect, frmUpdateSelect,
-  uBrowserCookies, uNxlPatcher, uCredStore, uLoginBrowser;
+  uBrowserCookies, uNxlPatcher, uCredStore, uLoginBrowser, uHooks;
 
 const
   DEFAULT_PRODUCT = 10200; // Mabinogi
@@ -441,6 +445,10 @@ begin
     FTheme := INI.ReadString('UI', 'Theme', '');
     if IsRunningUnderWine then TStyleManager.TrySetStyle(WINE_THEME)
     else if FTheme <> '' then TStyleManager.TrySetStyle(FTheme);
+    FBeforePatch  := INI.ReadString('Hooks', 'BeforePatch',  '');
+    FAfterPatch   := INI.ReadString('Hooks', 'AfterPatch',   '');
+    FBeforeLaunch := INI.ReadString('Hooks', 'BeforeLaunch', '');
+    FAfterLaunch  := INI.ReadString('Hooks', 'AfterLaunch',  '');
   finally
     INI.Free;
   end;
@@ -465,6 +473,10 @@ begin
     INI.WriteBool('UI', 'SortAlpha', FSortAlpha);
     INI.WriteBool('UI', 'Verbose',   FVerbose);
     INI.WriteString('UI', 'Theme',  FTheme);
+    INI.WriteString('Hooks', 'BeforePatch',  FBeforePatch);
+    INI.WriteString('Hooks', 'AfterPatch',   FAfterPatch);
+    INI.WriteString('Hooks', 'BeforeLaunch', FBeforeLaunch);
+    INI.WriteString('Hooks', 'AfterLaunch',  FAfterLaunch);
   finally
     INI.Free;
   end;
@@ -1055,7 +1067,8 @@ begin
   StartMinimized := FStartMinimized;
   TrayOnLaunch   := FTrayOnLaunch;
   if TFormSettings.Execute(GameExe, Theme, Verbose, AutoCheck, AutoUpdate,
-     AutoStart, StartMinimized, TrayOnLaunch, FRememberLastProfile, FSortAlpha) then
+     AutoStart, StartMinimized, TrayOnLaunch, FRememberLastProfile, FSortAlpha,
+     FBeforePatch, FAfterPatch, FBeforeLaunch, FAfterLaunch) then
   begin
     FDefaultGameExe := GameExe;
     FVerbose        := Verbose;
@@ -1314,6 +1327,9 @@ begin
 
   var ShouldAutoUpdate := FAutoUpdate;
   var StartTime        := Now;
+  var CapBeforePatch   := FBeforePatch;
+  var CapAfterPatch    := FAfterPatch;
+  var CapProfile       := SelectedProfile;
 
   TThread.CreateAnonymousThread(procedure
   var
@@ -1322,9 +1338,11 @@ begin
     CheckIdx: Integer;
     UpdateRoots:      TArray<string>;
     OutdatedRoots:    TArray<string>;
+    HookFired:        Boolean;
   begin
     Error            := '';
     SkipFinalCleanup := False;
+    HookFired        := False;
     CheckIdx         := 0;
     UpdateRoots      := [];
     OutdatedRoots    := [];
@@ -1409,6 +1427,13 @@ begin
             ForceAll    := Mode = umForceAll;
           end;
         end);
+
+      // Fire BeforePatch once before first actual download starts.
+      if (Length(UpdateRoots) > 0) and not HookFired then
+      begin
+        HookFired := True;
+        RunHookCmd(CapBeforePatch, CapProfile);
+      end;
 
       for InstRoot in UpdateRoots do
       begin
@@ -1529,6 +1554,10 @@ begin
           end)(InstRoot);
         end; // else (actual download)
       end; // for InstRoot in UpdateRoots
+
+      // Fire AfterPatch once all roots have been processed (no error path).
+      if HookFired then
+        RunHookCmd(CapAfterPatch, CapProfile);
     except
       on E: Exception do Error := E.Message;
     end;
@@ -1642,15 +1671,17 @@ end;
 
 procedure TFormMain.GameExitHandler(Sender: TObject);
 var
-  Elapsed: TDateTime;
-  Msg: string;
+  Elapsed:        TDateTime;
+  Msg:            string;
+  ExitedProfile:  string;
 begin
+  ExitedProfile := FSessionProfile;
   // Report session playtime (launch → exit) for the profile that was running.
   if FSessionStart > 0 then
   begin
     Elapsed := Now - FSessionStart;
     Msg := Format('Game exited. Session time: %s (%s).',
-      [FormatDateTime('hh:nn:ss', Elapsed), FSessionProfile]);
+      [FormatDateTime('hh:nn:ss', Elapsed), ExitedProfile]);
     Log(Msg);
     StatusBar.SimpleText := 'Session: ' + FormatDateTime('hh:nn:ss', Elapsed);
     FSessionStart   := 0;
@@ -1662,6 +1693,7 @@ begin
     Log('Game exited.');
     StatusBar.SimpleText := 'Game exited.';
   end;
+  RunHookCmd(FAfterLaunch, ExitedProfile);
   BtnLaunch.Enabled := True;
   UpdateButtons;
   LvProfiles.Repaint; // clear the Session cell for the ended profile
@@ -1705,6 +1737,7 @@ begin
   end;
 
   Log('Launching ' + Name + '...');
+  RunHookCmd(FBeforeLaunch, Name);
   BtnLaunch.Enabled := False;
   StatusBar.SimpleText := 'Game running — ' + Name;
   if FTrayOnLaunch and not FStartMinimized then

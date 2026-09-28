@@ -3,7 +3,7 @@ object FormSettings: TFormSettings
   Top = 0
   BorderStyle = bsDialog
   Caption = 'Settings'
-  ClientHeight = 390
+  ClientHeight = 560
   ClientWidth = 450
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
@@ -146,6 +146,73 @@ object FormSettings: TFormSettings
     Height = 100
     ScrollBars = ssVertical
     TabOrder = 12
+  end
+  object LblHooks: TLabel
+    Left = 12
+    Top = 372
+    Width = 380
+    Height = 15
+    Caption = 'Event hook commands  (%PROFILE% = active profile name):'
+  end
+  object LblBeforePatch: TLabel
+    Left = 12
+    Top = 397
+    Width = 70
+    Height = 15
+    Caption = 'Before patch:'
+    FocusControl = EdtBeforePatch
+  end
+  object EdtBeforePatch: TEdit
+    Left = 126
+    Top = 393
+    Width = 312
+    Height = 23
+    TabOrder = 13
+  end
+  object LblAfterPatch: TLabel
+    Left = 12
+    Top = 426
+    Width = 65
+    Height = 15
+    Caption = 'After patch:'
+    FocusControl = EdtAfterPatch
+  end
+  object EdtAfterPatch: TEdit
+    Left = 126
+    Top = 422
+    Width = 312
+    Height = 23
+    TabOrder = 14
+  end
+  object LblBeforeLaunch: TLabel
+    Left = 12
+    Top = 455
+    Width = 76
+    Height = 15
+    Caption = 'Before launch:'
+    FocusControl = EdtBeforeLaunch
+  end
+  object EdtBeforeLaunch: TEdit
+    Left = 126
+    Top = 451
+    Width = 312
+    Height = 23
+    TabOrder = 15
+  end
+  object LblAfterLaunch: TLabel
+    Left = 12
+    Top = 484
+    Width = 72
+    Height = 15
+    Caption = 'After launch:'
+    FocusControl = EdtAfterLaunch
+  end
+  object EdtAfterLaunch: TEdit
+    Left = 126
+    Top = 480
+    Width = 312
+    Height = 23
+    TabOrder = 16
   end
   object PnlBottom: TPanel
     Left = 0

@@ -20,6 +20,7 @@ function Build-Project($ProjectFile, $Platform, $BuildConfig) {
 
 function Build-All($BuildConfig) {
     Build-Project 'Rua.dproj' 'Win64' $BuildConfig
+    Build-Project 'RuaAPI.dproj' 'Win64' $BuildConfig
     Build-Project 'nxl3p_shim.dproj' 'Win64' $BuildConfig
     Build-Project 'nxl3p_stub.dproj' 'Win32' $BuildConfig
 }
@@ -39,11 +40,12 @@ function Finalize-Release {
 
 if ($Project) {
     switch ($Project) {
-        'Rua'  { Build-Project 'Rua.dproj' 'Win64' $Config }
-        'shim' { Build-Project 'nxl3p_shim.dproj' 'Win64' $Config }
-        'stub' { Build-Project 'nxl3p_stub.dproj' 'Win32' $Config }
+        'Rua'    { Build-Project 'Rua.dproj' 'Win64' $Config }
+        'api'    { Build-Project 'RuaAPI.dproj' 'Win64' $Config }
+        'shim'   { Build-Project 'nxl3p_shim.dproj' 'Win64' $Config }
+        'stub'   { Build-Project 'nxl3p_stub.dproj' 'Win32' $Config }
         default {
-            Write-Host "Unknown project: $Project. Use Rua, shim, or stub." -ForegroundColor Red
+            Write-Host "Unknown project: $Project. Use Rua, api, shim, or stub." -ForegroundColor Red
             exit 1
         }
     }

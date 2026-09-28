@@ -4,6 +4,7 @@ uses
   Winapi.Windows,
   System.SysUtils,
   Vcl.Forms,
+  uCLI           in 'src\units\uCLI.pas',
   frmMain        in 'src\forms\frmMain.pas'        {FormMain},
   frmLogin          in 'src\forms\frmLogin.pas'          {FormLogin},
   frmLoginWebView   in 'src\forms\frmLoginWebView.pas'  {FormLoginWebView},
@@ -19,6 +20,7 @@ uses
   uGameLaunch   in 'src\units\uGameLaunch.pas',
   uBrowserCookies in 'src\units\uBrowserCookies.pas',
   uNxlPatcher     in 'src\units\uNxlPatcher.pas',
+  uHooks          in 'src\units\uHooks.pas',
   uLoginBrowser    in 'src\units\uLoginBrowser.pas',
   uLoginBrowserWV  in 'src\units\uLoginBrowserWV.pas',
   uLoginBrowserCEF in 'src\units\uLoginBrowserCEF.pas',
@@ -36,6 +38,10 @@ begin
     RunCefSubProcess;
     Halt(0);
   end;
+
+  // Headless CLI mode: Rua.exe --cli <command> [options]
+  if IsCLIMode then
+    Halt(RunCLI);
 
   // Stub mode: we are running as a copy named nexon_client.exe.
   // nexon_api_x64.dll scans for nexon_client.exe by process name before

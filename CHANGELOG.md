@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.6.0 - 2026-09-28
+
+### Added
+- **Headless CLI mode** (`Rua.exe --cli <command>`). Commands: `login`, `login-otp`,
+  `check-update`, `update`, `launch`. Exit codes: 0 = ok, 1 = error, 2 = update available.
+  See `docs/CLI.md` for full reference.
+- **DLL API** (`RuaAPI.dll`). C-compatible stdcall exports: `RuaLogin`, `RuaLoginOTP`,
+  `RuaSessionCheck`, `RuaCheckUpdate`, `RuaRunPatcher`, `RuaLaunch`, `RuaGetLastError`.
+  C header `RuaAPI.h` included. See `docs/DLL-API.md` for full reference.
+- **Event hook commands** (Settings → Event hook commands). Run arbitrary shell commands
+  before/after patch and before/after game launch. `%PROFILE%` expands to the active
+  profile name. Stored in `config.ini` under `[Hooks]`.
+
 ## v1.5.3 - 2026-09-28
 
 ### Added
