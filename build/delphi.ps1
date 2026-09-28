@@ -26,6 +26,14 @@ function Build-All($BuildConfig) {
 }
 
 function Finalize-Release {
+    # Copy API header alongside the DLL
+    $HeaderSrc = Join-Path $DelphiDir 'RuaAPI.h'
+    $HeaderDst = Join-Path $ReleaseDir 'RuaAPI.h'
+    if (Test-Path $HeaderSrc) {
+        Copy-Item $HeaderSrc $HeaderDst -Force
+        Write-Host "Copied RuaAPI.h -> release/" -ForegroundColor Gray
+    }
+
     # Release builds go directly to release/ - just ensure runtime DLLs are there
     $RuntimeDlls = @('sqlite3.dll', 'WebView2Loader.dll')
     foreach ($dll in $RuntimeDlls) {
