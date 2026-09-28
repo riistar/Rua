@@ -1,7 +1,8 @@
 param(
     [ValidateSet('Debug', 'Release', 'All')]
     [string]$Config = 'Release',
-    [string]$Project
+    [string]$Project,
+    [string]$Release
 )
 
 $Root = Split-Path -LiteralPath $PSScriptRoot -Parent
@@ -44,6 +45,34 @@ function Finalize-Release {
     }
     Write-Host "`nRelease ready: $ReleaseDir" -ForegroundColor Green
     Get-ChildItem $ReleaseDir | ForEach-Object { Write-Host "  $($_.Name)" }
+
+    if ($Release) {
+        Create-Release $Release
+    }
+}
+
+function Create-Release($Tag) {
+    # Gather all non-zip files from release/
+    $Assets = Get-ChildItem $ReleaseDir -File |
+        Where-Object { $_.Extension -ne '.zip' } |
+        ForEach-Object { $_.FullName }
+
+    # Add doc files
+    $DocsDir = Join-Path $Root 'docs'
+    foreach ($doc in @('CLI.md', 'DLL-API.md')) {
+        $p = Join-Path $DocsDir $doc
+        if (Test-Path $p) { $Assets += $p }
+    }
+
+    Write-Host "`nCreating release $Tag with assets:" -ForegroundColor Cyan
+    $Assets | ForEach-Object { Write-Host "  $_" }
+
+    & gh release create $Tag --generate-notes @Assets
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "gh release create failed" -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+    Write-Host "Release $Tag created." -ForegroundColor Green
 }
 
 if ($Project) {
