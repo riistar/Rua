@@ -1,4 +1,12 @@
-# Changelog
+﻿# Changelog
+
+## v1.6.1 - 2026-09-29
+
+### Changed
+- **Hooks are now a shared system** — [Hooks] in config.ini is read and written
+  by uHooks.pas directly, not cached on the GUI form. Hooks now fire in both
+  GUI and CLI modes (update fires BeforePatch/AfterPatch; launch fires
+  BeforeLaunch/AfterLaunch).
 
 ## v1.6.0 - 2026-09-28
 
@@ -9,7 +17,7 @@
 - **DLL API** (`RuaAPI.dll`). C-compatible stdcall exports: `RuaLogin`, `RuaLoginOTP`,
   `RuaSessionCheck`, `RuaCheckUpdate`, `RuaRunPatcher`, `RuaLaunch`, `RuaGetLastError`.
   C header `RuaAPI.h` included. See `docs/DLL-API.md` for full reference.
-- **Event hook commands** (Settings → Event hook commands). Run arbitrary shell commands
+- **Event hook commands** (Settings â†’ Event hook commands). Run arbitrary shell commands
   before/after patch and before/after game launch. `%PROFILE%` expands to the active
   profile name. Stored in `config.ini` under `[Hooks]`.
 
@@ -49,7 +57,7 @@
 
 ### Fixed
 - Cancelling during the file scan no longer marks the game as up to date.
-- Garbled characters (`â€"`) in login status text and patcher log messages.
+- Garbled characters (`Ã¢â‚¬"`) in login status text and patcher log messages.
 - `nxl3p_shim.dll` is now built as Win64, fixing "Failed to Init NXALauncher".
 
 ## v1.5.1 - 2026-09-24
