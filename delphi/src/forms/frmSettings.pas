@@ -6,7 +6,7 @@ uses
   Winapi.Windows, System.SysUtils, System.Classes, System.IOUtils,
   Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Dialogs,
   Vcl.StdCtrls, Vcl.ExtCtrls,
-  Vcl.Themes, uIgnoreList, uLoginBrowser;
+  Vcl.Themes, uIgnoreList, uLoginBrowser, uHooks;
 
 type
   TFormSettings = class(TForm)
@@ -55,11 +55,7 @@ type
       var StartMinimized: Boolean;
       var TrayOnLaunch:  Boolean;
       var RememberLastProfile: Boolean;
-      var SortAlpha:     Boolean;
-      var BeforePatch:   string;
-      var AfterPatch:    string;
-      var BeforeLaunch:  string;
-      var AfterLaunch:   string
+      var SortAlpha:     Boolean
     ): Boolean;
   end;
 
@@ -77,16 +73,14 @@ class function TFormSettings.Execute(
   var StartMinimized: Boolean;
   var TrayOnLaunch:  Boolean;
   var RememberLastProfile: Boolean;
-  var SortAlpha:     Boolean;
-  var BeforePatch:   string;
-  var AfterPatch:    string;
-  var BeforeLaunch:  string;
-  var AfterLaunch:   string
+  var SortAlpha:     Boolean
 ): Boolean;
 var
   F: TFormSettings;
+  H: TRuaHooks;
 begin
   var OrigTheme := TStyleManager.ActiveStyle.Name;
+  H := LoadHooks;
   F := TFormSettings.Create(nil);
   try
     F.FOriginalTheme           := OrigTheme;
@@ -100,10 +94,10 @@ begin
     F.ChkRememberLastProfile.Checked := RememberLastProfile;
     F.ChkSortAlpha.Checked     := SortAlpha;
     F.MemoIgnore.Lines.Text    := string.Join(sLineBreak, LoadIgnorePatterns);
-    F.EdtBeforePatch.Text      := BeforePatch;
-    F.EdtAfterPatch.Text       := AfterPatch;
-    F.EdtBeforeLaunch.Text     := BeforeLaunch;
-    F.EdtAfterLaunch.Text      := AfterLaunch;
+    F.EdtBeforePatch.Text      := H.BeforePatch;
+    F.EdtAfterPatch.Text       := H.AfterPatch;
+    F.EdtBeforeLaunch.Text     := H.BeforeLaunch;
+    F.EdtAfterLaunch.Text      := H.AfterLaunch;
 
     var Idx := F.CmbTheme.Items.IndexOf(Theme);
     if Idx >= 0 then F.CmbTheme.ItemIndex := Idx;
@@ -123,10 +117,11 @@ begin
       if F.CmbTheme.ItemIndex >= 0 then
         Theme := F.CmbTheme.Items[F.CmbTheme.ItemIndex];
       SaveIgnorePatterns(F.MemoIgnore.Lines.ToStringArray);
-      BeforePatch  := Trim(F.EdtBeforePatch.Text);
-      AfterPatch   := Trim(F.EdtAfterPatch.Text);
-      BeforeLaunch := Trim(F.EdtBeforeLaunch.Text);
-      AfterLaunch  := Trim(F.EdtAfterLaunch.Text);
+      H.BeforePatch  := Trim(F.EdtBeforePatch.Text);
+      H.AfterPatch   := Trim(F.EdtAfterPatch.Text);
+      H.BeforeLaunch := Trim(F.EdtBeforeLaunch.Text);
+      H.AfterLaunch  := Trim(F.EdtAfterLaunch.Text);
+      SaveHooks(H);
     end
     else
       TStyleManager.TrySetStyle(OrigTheme);

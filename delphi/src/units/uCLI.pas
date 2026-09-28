@@ -43,7 +43,7 @@ uses
   Winapi.Windows,
   System.SysUtils, System.IOUtils, System.Classes, System.SyncObjs, System.StrUtils,
   uProfiles, uDeviceId, uNexonAPI, uNxlPatcher, uGameLaunch,
-  uBrowserCookies, uIgnoreList;
+  uBrowserCookies, uIgnoreList, uHooks;
 
 const
   EXITCODE_OK     = 0;
@@ -369,6 +369,8 @@ begin
   end;
 
   ConLn('Patching: ' + GamePath);
+  var Hooks := LoadHooks;
+  RunHookCmd(Hooks.BeforePatch, Prof.Name);
   try
     RunPatcher(RemoteHash, GamePath, ProductId,
       procedure(const Msg: string)
@@ -401,6 +403,7 @@ begin
 
     ConWrite(sLineBreak); // newline after in-place progress bar
     ConLn('Done.');
+    RunHookCmd(Hooks.AfterPatch, Prof.Name);
     Result := EXITCODE_OK;
   except
     on E: Exception do
@@ -469,6 +472,8 @@ begin
   end;
 
   ConLn('Launching: ' + Prof.Name);
+  var LaunchHooks := LoadHooks;
+  RunHookCmd(LaunchHooks.BeforeLaunch, Prof.Name);
   Waiter   := TGameWaiter.Create;
   Launcher := TGameLauncher.Create;
   try
@@ -491,6 +496,7 @@ begin
       Sleep(300);
     end;
     ConLn('Game exited.');
+    RunHookCmd(LaunchHooks.AfterLaunch, Prof.Name);
     Result := EXITCODE_OK;
   finally
     Launcher.Free;

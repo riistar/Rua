@@ -111,10 +111,6 @@ type
     FSessionTimer:    TTimer;   // live session-time ticker
     FCleanupOnExit:   Boolean;
     FInRefreshProfiles: Boolean; // suppress session check during auto-select
-    FBeforePatch:   string;
-    FAfterPatch:    string;
-    FBeforeLaunch:  string;
-    FAfterLaunch:   string;
     FNewsLoaded: Boolean;        // feed loaded once, from FormShow (after form is themed/drawn)
     FNews:       TArray<TNewsItem>;
     FNewsFeed:   TNewsFeed;       // rendered into NewsScroll at runtime (TNewsFeed is not DFM-streamable)
@@ -445,10 +441,6 @@ begin
     FTheme := INI.ReadString('UI', 'Theme', '');
     if IsRunningUnderWine then TStyleManager.TrySetStyle(WINE_THEME)
     else if FTheme <> '' then TStyleManager.TrySetStyle(FTheme);
-    FBeforePatch  := INI.ReadString('Hooks', 'BeforePatch',  '');
-    FAfterPatch   := INI.ReadString('Hooks', 'AfterPatch',   '');
-    FBeforeLaunch := INI.ReadString('Hooks', 'BeforeLaunch', '');
-    FAfterLaunch  := INI.ReadString('Hooks', 'AfterLaunch',  '');
   finally
     INI.Free;
   end;
@@ -473,10 +465,6 @@ begin
     INI.WriteBool('UI', 'SortAlpha', FSortAlpha);
     INI.WriteBool('UI', 'Verbose',   FVerbose);
     INI.WriteString('UI', 'Theme',  FTheme);
-    INI.WriteString('Hooks', 'BeforePatch',  FBeforePatch);
-    INI.WriteString('Hooks', 'AfterPatch',   FAfterPatch);
-    INI.WriteString('Hooks', 'BeforeLaunch', FBeforeLaunch);
-    INI.WriteString('Hooks', 'AfterLaunch',  FAfterLaunch);
   finally
     INI.Free;
   end;
@@ -1067,8 +1055,7 @@ begin
   StartMinimized := FStartMinimized;
   TrayOnLaunch   := FTrayOnLaunch;
   if TFormSettings.Execute(GameExe, Theme, Verbose, AutoCheck, AutoUpdate,
-     AutoStart, StartMinimized, TrayOnLaunch, FRememberLastProfile, FSortAlpha,
-     FBeforePatch, FAfterPatch, FBeforeLaunch, FAfterLaunch) then
+     AutoStart, StartMinimized, TrayOnLaunch, FRememberLastProfile, FSortAlpha) then
   begin
     FDefaultGameExe := GameExe;
     FVerbose        := Verbose;
@@ -1327,8 +1314,9 @@ begin
 
   var ShouldAutoUpdate := FAutoUpdate;
   var StartTime        := Now;
-  var CapBeforePatch   := FBeforePatch;
-  var CapAfterPatch    := FAfterPatch;
+  var CapHooks         := LoadHooks;
+  var CapBeforePatch   := CapHooks.BeforePatch;
+  var CapAfterPatch    := CapHooks.AfterPatch;
   var CapProfile       := SelectedProfile;
 
   TThread.CreateAnonymousThread(procedure
@@ -1693,7 +1681,7 @@ begin
     Log('Game exited.');
     StatusBar.SimpleText := 'Game exited.';
   end;
-  RunHookCmd(FAfterLaunch, ExitedProfile);
+  RunHookCmd(LoadHooks.AfterLaunch, ExitedProfile);
   BtnLaunch.Enabled := True;
   UpdateButtons;
   LvProfiles.Repaint; // clear the Session cell for the ended profile
@@ -1737,7 +1725,7 @@ begin
   end;
 
   Log('Launching ' + Name + '...');
-  RunHookCmd(FBeforeLaunch, Name);
+  RunHookCmd(LoadHooks.BeforeLaunch, Name);
   BtnLaunch.Enabled := False;
   StatusBar.SimpleText := 'Game running — ' + Name;
   if FTrayOnLaunch and not FStartMinimized then
