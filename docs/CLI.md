@@ -1,4 +1,4 @@
-# Rua CLI Reference
+﻿# Rua CLI Reference
 
 Rua includes a headless CLI mode for scripting, automation, and integration
 with external tools (launchers, game managers, CI scripts).
@@ -9,17 +9,17 @@ Rua.exe --cli <command> [options]
 
 ## Requirements
 
-**Email/password accounts** — no GUI setup needed. `login --email E --password P`
+**Email/password accounts** â€” no GUI setup needed. `login --email E --password P`
 creates a profile on first run. All commands work entirely from the CLI.
 
-**TPA / Google / browser accounts** — GUI required once to capture the initial
+**TPA / Google / browser accounts** â€” GUI required once to capture the initial
 session cookie. After that, `check-update`, `update`, and `launch` work headlessly
 until the session expires. No CLI path to re-authenticate TPA accounts (auto-refresh
 works only for email/password; TPA returns error 20182).
 
 - Credentials stored in Windows Credential Manager, same as GUI.
 - Config and profiles shared with GUI (`%APPDATA%\Rua\`).
-- Event hooks fire **only in GUI mode**. Wrap CLI calls in your own scripts instead.
+- Event hooks configured in `%APPDATA%Ruanfig.ini` fire in both GUI and CLI modes.
 
 ---
 
@@ -41,9 +41,9 @@ Rua.exe --cli login [--profile NAME] [--email E --password P]
 
 - With `--email` + `--password`: logs in, saves cookies, creates profile if needed.
 - Without credentials: checks stored session; attempts autologin refresh if expired
-  (email/password only — not TPA/Google).
+  (email/password only â€” not TPA/Google).
 
-**MFA:** server returns OTP challenge → command prints MFA key and exits 1.
+**MFA:** server returns OTP challenge â†’ command prints MFA key and exits 1.
 Submit with `login-otp`:
 ```
 Rua.exe --cli login-otp --mfa-key KEY --otp 123456 [--profile NAME]
@@ -131,7 +131,7 @@ Exit codes: `0` launched and exited normally, `1` error.
 ## Examples
 
 ```powershell
-# First-time setup — email/password, no GUI needed
+# First-time setup â€” email/password, no GUI needed
 Rua.exe --cli login --profile Alice --email alice@example.com --password hunter2
 
 # Check and update
@@ -152,8 +152,9 @@ Rua.exe --cli launch --game-path "$path\Client.exe"
 
 ## Event hooks
 
-Hooks fire **only in GUI mode**, not in CLI mode. Configure in
-**Settings > Event hook commands** or `%APPDATA%\Rua\config.ini`:
+Hook commands run before/after patch and before/after launch. They fire in
+**both GUI and CLI modes**. Configure in **Settings > Event hook commands**
+or directly in `%APPDATA%\Rua\config.ini`:
 
 ```ini
 [Hooks]
@@ -163,4 +164,12 @@ BeforeLaunch=C:\Scripts\before-launch.bat %PROFILE%
 AfterLaunch=C:\Scripts\after-launch.bat %PROFILE%
 ```
 
-`%PROFILE%` expands to the active profile name. Runs fire-and-forget.
+`%PROFILE%` expands to the active profile name at runtime. Hooks run
+fire-and-forget (the launcher does not wait for them to finish).
+
+| Hook | Fires |
+|---|---|
+| `BeforePatch` | Before update download starts (`update` command / GUI check) |
+| `AfterPatch` | After update completes successfully |
+| `BeforeLaunch` | Just before the game process starts |
+| `AfterLaunch` | After the game process exits |
