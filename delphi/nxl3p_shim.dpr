@@ -99,8 +99,9 @@ end;
 // 0xbeef0001  called from nxapi2_init(*param_1) during game startup
 function ShimInit(Param: UInt64): Integer; stdcall;
 var
-  Ticket, MappingName: string;
+  Ticket, MappingName, ElevCL: string;
   ReadyEv: THandle;
+  ElevPos, ElevSP: Integer;
 begin
   ShimLog('ShimInit called');
   Result   := 0; // 0 = success per nxapi2_init convention
@@ -113,6 +114,17 @@ begin
     UInt64ToWide(10200, @GProductIdStr[0], Length(GProductIdStr));
 
   MappingName := GetEnvironmentVariable(TICKET_ENV);
+  if MappingName = '' then begin
+    // Elevated launch: UAC breaks env var inheritance; launcher appends --rua-map <name>
+    ElevCL  := GetCommandLineW;
+    ElevPos := Pos('--rua-map ', ElevCL);
+    if ElevPos > 0 then begin
+      MappingName := Copy(ElevCL, ElevPos + 10, MaxInt);
+      ElevSP := Pos(' ', MappingName);
+      if ElevSP > 0 then SetLength(MappingName, ElevSP - 1);
+      SetEnvironmentVariableW(PWideChar(TICKET_ENV), PWideChar(MappingName));
+    end;
+  end;
   if ReadPrivateTicket(Ticket) then begin
     WideAssign(@GTicket[0], Length(GTicket), PWideChar(Ticket));
     GInitOK := True;

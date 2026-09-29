@@ -292,21 +292,19 @@ begin
     // Game requests elevation; ShellExecuteEx handles UAC and the child
     // inherits TICKET_ENV from our process — no suspended start in this path.
     LaunchLog('CreateProcessW: ERROR_ELEVATION_REQUIRED, falling back to ShellExecuteEx');
-    SetEnvironmentVariableW(PWideChar(TICKET_ENV), PWideChar(PrivateTicket.Name));
-    try
-      ZeroMemory(@SEI, SizeOf(SEI));
-      SEI.cbSize       := SizeOf(SEI);
-      SEI.fMask        := SEE_MASK_NOCLOSEPROCESS;
-      SEI.lpFile       := PChar(GameExePath);
-      SEI.lpParameters := PChar(ParamStr);
-      SEI.lpDirectory  := PChar(GameDir);
-      SEI.nShow        := SW_SHOWNORMAL;
-      if not ShellExecuteEx(@SEI) then RaiseLastOSError;
-      GamePI.hProcess := SEI.hProcess;
-      GamePI.hThread  := 0;
-    finally
-      SetEnvironmentVariableW(PWideChar(TICKET_ENV), nil);
-    end;
+    // UAC elevation breaks env var inheritance (child spawned by AppInfo, not by us).
+    // Append the mapping name to the command line; the shim parses --rua-map as fallback.
+    ParamStr := ParamStr + ' --rua-map ' + PrivateTicket.Name;
+    ZeroMemory(@SEI, SizeOf(SEI));
+    SEI.cbSize       := SizeOf(SEI);
+    SEI.fMask        := SEE_MASK_NOCLOSEPROCESS;
+    SEI.lpFile       := PChar(GameExePath);
+    SEI.lpParameters := PChar(ParamStr);
+    SEI.lpDirectory  := PChar(GameDir);
+    SEI.nShow        := SW_SHOWNORMAL;
+    if not ShellExecuteEx(@SEI) then RaiseLastOSError;
+    GamePI.hProcess := SEI.hProcess;
+    GamePI.hThread  := 0;
     StopPipe;
     FPipeThread := TPipeServerThread.Create(Ticket, Hashed, ProductId, GamePI.hProcess);
     FPipeThread.Start;
