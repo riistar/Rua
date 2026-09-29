@@ -284,7 +284,9 @@ end;
 
 constructor TCefBaseRefCountedRef.Create(data: Pointer);
 begin
-  Assert(data <> nil);
+  // Keep the runtime guard without embedding a developer source path.
+  if data = nil then
+    raise EAssertionFailed.Create('CEF reference data must not be nil');
   FData := data;
 end;
 

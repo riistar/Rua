@@ -146,6 +146,7 @@ var
   Prof: TNexonProfile;
   HttpStatus, NexonCode, RefreshStatus: Integer;
   NxLSess, Refreshed: string;
+  DummyExpiry: TDateTime;
 begin
   ProfileName := GetArg('profile');
   Email       := GetArg('email');
@@ -195,6 +196,7 @@ begin
 
     Prof.Email := Email;
     AddOrUpdateProfile(Prof, Cookies);
+    UpdateNxLExpiry(Prof.Name, LastNxLExpiry);
     ConLn('Saved. Profile: ' + Prof.Name);
     Exit(EXITCODE_OK);
   end;
@@ -227,10 +229,12 @@ begin
   if (NxLSess <> '') and (DevId <> '') then
   begin
     RefreshStatus := 0;
-    Refreshed     := AutoLoginRefresh(NxLSess, DevId, RefreshStatus);
+    Refreshed     := AutoLoginRefresh(NxLSess, DevId, RefreshStatus, DummyExpiry);
     if Refreshed <> '' then
     begin
       AddOrUpdateProfile(Prof, Refreshed);
+      if DummyExpiry > 0 then
+        UpdateNxLExpiry(Prof.Name, DummyExpiry);
       ConLn('Session refreshed: ' + ProfileName);
       Exit(EXITCODE_OK);
     end;
@@ -273,7 +277,10 @@ begin
   end;
 
   if Prof.Name <> '' then
-    AddOrUpdateProfile(Prof, Cookies)
+  begin
+    AddOrUpdateProfile(Prof, Cookies);
+    UpdateNxLExpiry(Prof.Name, LastNxLExpiry);
+  end
   else
     ConLn('Cookies: ' + Cookies);
 
@@ -510,7 +517,12 @@ end;
 
 function IsCLIMode: Boolean;
 begin
-  Result := FindCmdLineSwitch('cli');
+  // FindCmdLineSwitch removes only one prefix character: --cli would not
+  // match 'cli'. Use the same explicit spellings as the command parser.
+  Result := False;
+  for var I := 1 to ParamCount do
+    if SameText(ParamStr(I), '--cli') or SameText(ParamStr(I), '-cli') then
+      Exit(True);
 end;
 
 function RunCLI: Integer;
@@ -526,7 +538,8 @@ begin
   for I := 1 to ParamCount do
   begin
     var A := ParamStr(I);
-    if SameText(A, '--cli') then begin FoundCLI := True; Continue; end;
+    if SameText(A, '--cli') or SameText(A, '-cli') then
+    begin FoundCLI := True; Continue; end;
     if FoundCLI and (Length(A) > 0) and (A[1] <> '-') then
     begin
       Cmd := A.ToLower;

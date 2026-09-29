@@ -1,293 +1,218 @@
 unit uPipeServer;
-(*
-  Named pipe server thread.
-  Serves the Nexon SDK pipe that game processes connect to for auth tickets.
-  Pipe: \\.\pipe\[79d303ac-af79-46c3-9ae0-6cd4ff4805ad]
-  Debug log: %TEMP%\nxl_pipe_debug.txt
-
-  Pipe MUST be created with FILE_FLAG_OVERLAPPED — otherwise ConnectNamedPipe
-  with a non-NULL overlapped struct returns ERROR_OPERATION_ABORTED (995) immediately
-  and the server never accepts connections.
-*)
 
 interface
 
-uses
-  Winapi.Windows, System.Classes, System.SysUtils, System.IOUtils, uProtocol;
+uses Winapi.Windows, System.Classes, System.SysUtils, uProtocol;
 
 const
   NEXON_PIPE_NAME = '\\.\pipe\{79d303ac-af79-46c3-9ae0-6cd4ff4805ad}';
+  MAX_PIPE_FRAME = 65536;
 
 type
   TPipeServerThread = class(TThread)
   private
-    FPipe:         THandle;
-    FTicket:       string;
-    FHashedUserNo: string;
-    FProductId:    Integer;
-    FStopEvent:    THandle;
+    FPipe, FStopEvent, FGameProcess: THandle;
+    FGamePid: DWORD;
+    FTicket, FHashedUserNo: string;
+    FProductId: Integer;
+    function AuthorizedClient: Boolean;
+    function Transfer(Buffer: Pointer; Count: DWORD; Writing: Boolean): Boolean;
+    function PipeRead(out Data: TBytes; DataLen: DWORD): Boolean;
+    function PipeWrite(const Data: TBytes): Boolean;
     procedure ServeClient;
-    function  PipeRead(out Data: TBytes; DataLen: DWORD): Boolean;
-    function  PipeWrite(const Data: TBytes): Boolean;
   protected
     procedure Execute; override;
   public
-    constructor Create(const Ticket, HashedUserNo: string; ProductId: Integer);
+    constructor Create(const Ticket, HashedUserNo: string; ProductId: Integer;
+      GameProcess: THandle; const PipeName: string = NEXON_PIPE_NAME);
     destructor Destroy; override;
     procedure StopServer;
   end;
 
 implementation
 
-procedure PipeLog(const Msg: string);
-begin
-  try
-    TFile.AppendAllText(
-      GetEnvironmentVariable('TEMP') + '\nxl_pipe_debug.txt',
-      FormatDateTime('[hh:nn:ss.zzz] ', Now) + Msg + sLineBreak,
-      TEncoding.UTF8);
-  except end;
-end;
+uses uLaunchSecurity;
 
-constructor TPipeServerThread.Create(const Ticket, HashedUserNo: string; ProductId: Integer);
+constructor TPipeServerThread.Create(const Ticket, HashedUserNo: string;
+  ProductId: Integer; GameProcess: THandle; const PipeName: string);
+var SA: TSecurityAttributes;
 begin
   inherited Create(True);
-  FTicket        := Ticket;
-  FHashedUserNo  := HashedUserNo;
-  FProductId     := ProductId;
-  FPipe          := INVALID_HANDLE_VALUE;
-  FStopEvent     := CreateEvent(nil, True, False, nil);
   FreeOnTerminate := False;
+  FPipe := INVALID_HANDLE_VALUE;
+  FStopEvent := CreateEvent(nil, True, False, nil);
+  if FStopEvent = 0 then RaiseLastOSError;
+  if not DuplicateHandle(GetCurrentProcess, GameProcess, GetCurrentProcess,
+    @FGameProcess, 0, False, DUPLICATE_SAME_ACCESS) then RaiseLastOSError;
+  FGamePid := GetProcessId(FGameProcess);
+  if (FGamePid = 0) or (WaitForSingleObject(FGameProcess, 0) <> WAIT_TIMEOUT) then
+    raise Exception.Create('Game process is unavailable');
+  FTicket := Ticket;
+  FHashedUserNo := HashedUserNo;
+  FProductId := ProductId;
+  ZeroMemory(@SA, SizeOf(SA));
+  SA.nLength := SizeOf(SA);
+  SA.lpSecurityDescriptor := UserOnlyDescriptor;
+  try
+    // $8 = PIPE_REJECT_REMOTE_CLIENTS. Never attach to an existing server.
+    FPipe := CreateNamedPipeW(PWideChar(PipeName),
+      PIPE_ACCESS_DUPLEX or FILE_FLAG_OVERLAPPED or FILE_FLAG_FIRST_PIPE_INSTANCE,
+      PIPE_TYPE_BYTE or PIPE_READMODE_BYTE or PIPE_WAIT or $8,
+      1, 4096, 4096, 5000, @SA);
+    if FPipe = INVALID_HANDLE_VALUE then RaiseLastOSError;
+  finally
+    LocalFree(HLOCAL(SA.lpSecurityDescriptor));
+  end;
 end;
 
 destructor TPipeServerThread.Destroy;
 begin
   StopServer;
-  CloseHandle(FStopEvent);
+  Terminate;
+  if Suspended then Start;
+  WaitFor;
+  if (FPipe <> 0) and (FPipe <> INVALID_HANDLE_VALUE) then CloseHandle(FPipe);
+  if FGameProcess <> 0 then CloseHandle(FGameProcess);
+  if FStopEvent <> 0 then CloseHandle(FStopEvent);
+  FTicket := '';
   inherited;
 end;
 
 procedure TPipeServerThread.StopServer;
 begin
-  SetEvent(FStopEvent);
-  if FPipe <> INVALID_HANDLE_VALUE then
-  begin
-    CancelIoEx(FPipe, nil);
-    DisconnectNamedPipe(FPipe);
-    CloseHandle(FPipe);
-    FPipe := INVALID_HANDLE_VALUE;
-  end;
+  if FStopEvent <> 0 then SetEvent(FStopEvent);
+  if (FPipe <> 0) and (FPipe <> INVALID_HANDLE_VALUE) then CancelIoEx(FPipe, nil);
 end;
 
-// Overlapped read of exactly DataLen bytes; aborts on stop event or 30s timeout.
+function TPipeServerThread.AuthorizedClient: Boolean;
+var Pid: ULONG;
+begin
+  Pid := 0;
+  Result := (FGameProcess <> 0) and
+    (WaitForSingleObject(FGameProcess, 0) = WAIT_TIMEOUT) and
+    GetNamedPipeClientProcessId(FPipe, Pid) and (Pid = FGamePid);
+end;
+
+function TPipeServerThread.Transfer(Buffer: Pointer; Count: DWORD;
+  Writing: Boolean): Boolean;
+var
+  Ov: TOverlapped;
+  Events: array[0..2] of THandle;
+  Done, Got, ErrorCode: DWORD;
+  Immediate: BOOL;
+begin
+  Result := False;
+  if (Count = 0) or (Count > MAX_PIPE_FRAME) then Exit;
+  Done := 0;
+  while Done < Count do begin
+    if Terminated or (WaitForSingleObject(FStopEvent, 0) <> WAIT_TIMEOUT) then Exit;
+    ZeroMemory(@Ov, SizeOf(Ov));
+    Ov.hEvent := CreateEvent(nil, True, False, nil);
+    if Ov.hEvent = 0 then Exit;
+    try
+      Got := 0;
+      if Writing then
+        Immediate := WriteFile(FPipe, PByte(NativeUInt(Buffer)+Done)^, Count-Done, Got, @Ov)
+      else
+        Immediate := ReadFile(FPipe, PByte(NativeUInt(Buffer)+Done)^, Count-Done, Got, @Ov);
+      if not Immediate then begin
+        ErrorCode := GetLastError;
+        if ErrorCode <> ERROR_IO_PENDING then Exit;
+        Events[0] := Ov.hEvent; Events[1] := FStopEvent; Events[2] := FGameProcess;
+        if WaitForMultipleObjects(3, @Events[0], False, 30000) <> WAIT_OBJECT_0 then begin
+          CancelIoEx(FPipe, @Ov);
+          // Keep OVERLAPPED storage alive until cancellation finishes.
+          GetOverlappedResult(FPipe, Ov, Got, True);
+          Exit;
+        end;
+        if not GetOverlappedResult(FPipe, Ov, Got, False) then Exit;
+      end;
+      if Got = 0 then Exit;
+      Inc(Done, Got);
+    finally
+      CloseHandle(Ov.hEvent);
+    end;
+  end;
+  Result := True;
+end;
+
 function TPipeServerThread.PipeRead(out Data: TBytes; DataLen: DWORD): Boolean;
-var
-  Ov:  TOverlapped;
-  Got: DWORD;
-  WR:  DWORD;
-  H:   array[0..1] of THandle;
 begin
   Result := False;
+  if (DataLen = 0) or (DataLen > MAX_PIPE_FRAME) then Exit;
   SetLength(Data, DataLen);
-  ZeroMemory(@Ov, SizeOf(Ov));
-  Ov.hEvent := CreateEvent(nil, True, False, nil);
-  try
-    if ReadFile(FPipe, Data[0], DataLen, Got, @Ov) then
-    begin
-      Result := Got = DataLen;
-      Exit;
-    end;
-    if GetLastError <> ERROR_IO_PENDING then Exit;
-    H[0] := Ov.hEvent;
-    H[1] := FStopEvent;
-    WR := WaitForMultipleObjects(2, @H[0], False, 30000);
-    if WR <> WAIT_OBJECT_0 then
-    begin
-      CancelIoEx(FPipe, @Ov);
-      Exit;
-    end;
-    if GetOverlappedResult(FPipe, Ov, Got, False) then
-      Result := Got = DataLen;
-  finally
-    CloseHandle(Ov.hEvent);
-  end;
+  Result := Transfer(@Data[0], DataLen, False);
 end;
 
-// Overlapped write; waits for completion (responses are small, always fast).
 function TPipeServerThread.PipeWrite(const Data: TBytes): Boolean;
-var
-  Ov:      TOverlapped;
-  Written: DWORD;
-  Len:     DWORD;
 begin
-  Result := False;
-  Len := Length(Data);
-  ZeroMemory(@Ov, SizeOf(Ov));
-  Ov.hEvent := CreateEvent(nil, True, False, nil);
-  try
-    if WriteFile(FPipe, Data[0], Len, Written, @Ov) then
-    begin
-      Result := Written = Len;
-      Exit;
-    end;
-    if GetLastError <> ERROR_IO_PENDING then Exit;
-    if GetOverlappedResult(FPipe, Ov, Written, True) then
-      Result := Written = Len;
-  finally
-    CloseHandle(Ov.hEvent);
-  end;
-end;
-
-function ReadFrameLen(Thread: TPipeServerThread; out Len: Integer): Boolean;
-var
-  RawBytes: TBytes;
-begin
-  Result := False;
-  Len    := 0;
-  if not Thread.PipeRead(RawBytes, SizeOf(Integer)) then Exit;
-  Move(RawBytes[0], Len, SizeOf(Integer));
-  Result := Len > 0;
+  Result := (Length(Data) > 0) and (Length(Data) <= MAX_PIPE_FRAME);
+  if Result then Result := Transfer(@Data[0], Length(Data), True);
 end;
 
 procedure TPipeServerThread.Execute;
 var
-  Overlapped:  TOverlapped;
-  WaitResult:  DWORD;
-  Handles:     array[0..1] of THandle;
-  ConnResult:  BOOL;
-  Err:         DWORD;
+  Ov: TOverlapped;
+  Events: array[0..2] of THandle;
+  Connected: Boolean;
+  ErrorCode, Ignored: DWORD;
 begin
-  // FILE_FLAG_OVERLAPPED required — ConnectNamedPipe with a non-NULL overlapped
-  // struct on a non-overlapped pipe returns ERROR_OPERATION_ABORTED (995) immediately.
-  FPipe := CreateNamedPipe(
-    NEXON_PIPE_NAME,
-    PIPE_ACCESS_DUPLEX or FILE_FLAG_OVERLAPPED,
-    PIPE_TYPE_BYTE or PIPE_READMODE_BYTE or PIPE_WAIT,
-    1,     // max instances — one game at a time
-    4096,
-    4096,
-    5000,
-    nil
-  );
-
-  if FPipe = INVALID_HANDLE_VALUE then
-  begin
-    PipeLog('CreateNamedPipe FAILED err=' + IntToStr(GetLastError));
-    Exit;
-  end;
-  PipeLog('Pipe created: ' + NEXON_PIPE_NAME);
-
-  ZeroMemory(@Overlapped, SizeOf(Overlapped));
-  Overlapped.hEvent := CreateEvent(nil, True, False, nil);
-  try
-    ConnResult := ConnectNamedPipe(FPipe, @Overlapped);
-    Err := GetLastError;
-
-    if ConnResult or (Err = ERROR_PIPE_CONNECTED) then
-    begin
-      PipeLog('Client already connected');
-      ServeClient;
-    end
-    else if Err = ERROR_IO_PENDING then
-    begin
-      Handles[0] := Overlapped.hEvent;
-      Handles[1] := FStopEvent;
-      WaitResult := WaitForMultipleObjects(2, @Handles[0], False, INFINITE);
-      if WaitResult = WAIT_OBJECT_0 then
-      begin
-        PipeLog('Client connected (async)');
-        ServeClient;
-      end
-      else
-        PipeLog('Stop event — no client connected');
-    end
-    else
-      PipeLog('ConnectNamedPipe error: ' + IntToStr(Err));
-  finally
-    CloseHandle(Overlapped.hEvent);
-    StopServer;
+  if Terminated then Exit;
+  while not Terminated and (WaitForSingleObject(FStopEvent, 0) = WAIT_TIMEOUT)
+    and (WaitForSingleObject(FGameProcess, 0) = WAIT_TIMEOUT) do begin
+    ZeroMemory(@Ov, SizeOf(Ov));
+    Ov.hEvent := CreateEvent(nil, True, False, nil);
+    if Ov.hEvent = 0 then Exit;
+    try
+      Connected := ConnectNamedPipe(FPipe, @Ov);
+      if not Connected then begin
+        ErrorCode := GetLastError;
+        if ErrorCode = ERROR_PIPE_CONNECTED then Connected := True
+        else if ErrorCode = ERROR_IO_PENDING then begin
+          Events[0] := Ov.hEvent; Events[1] := FStopEvent; Events[2] := FGameProcess;
+          if WaitForMultipleObjects(3, @Events[0], False, 30000) = WAIT_OBJECT_0 then
+            Connected := GetOverlappedResult(FPipe, Ov, Ignored, False)
+          else begin
+            CancelIoEx(FPipe, @Ov);
+            GetOverlappedResult(FPipe, Ov, Ignored, True);
+          end;
+        end;
+      end;
+      if Connected and AuthorizedClient then begin
+        try ServeClient; except { malformed input closes this connection } end;
+      end;
+      DisconnectNamedPipe(FPipe);
+    finally
+      CloseHandle(Ov.hEvent);
+    end;
   end;
 end;
 
 procedure TPipeServerThread.ServeClient;
 var
-  LenBytes: TBytes;
-  BodyBytes: TBytes;
-  Len:  Integer;
-  Req:  TNexonRequest;
-  Resp: TBytes;
-  RespLen: Integer;
-  LenBuf: array[0..3] of Byte;
+  Header, Body, Response: TBytes;
+  Size: Integer;
+  Request: TNexonRequest;
 begin
-  while not Terminated do
-  begin
-    // Read 4-byte length prefix
-    if not PipeRead(LenBytes, SizeOf(Integer)) then
-    begin
-      PipeLog('Read length failed/disconnected');
-      Break;
-    end;
-    Move(LenBytes[0], Len, SizeOf(Integer));
-    if Len <= 0 then
-    begin
-      PipeLog('Invalid frame length: ' + IntToStr(Len));
-      Break;
-    end;
-
-    // Read JSON body
-    if not PipeRead(BodyBytes, Len) then
-    begin
-      PipeLog('Read body failed');
-      Break;
-    end;
-
-    Req := ParseRequest(BodyBytes);
-    PipeLog('Request: type=' + Req.TypeStr + ' productId=' + IntToStr(Req.ProductId));
-
-    case Req.ReqType of
-      rtGetProductTicket:
-        Resp := BuildTicketResponse(Req, FTicket);
-
-      rtGetSDKConfiguration:
-        Resp := BuildSDKConfigResponse(Req, FHashedUserNo);
-
-      rtProductActive, rtGetClientToken:
-        Resp := BuildAckResponse(Req);
-
-      rtProductClosed:
-      begin
-        Resp := BuildAckResponse(Req);
-        // Write response then exit
-        RespLen := Length(Resp);
-        Move(RespLen, LenBuf[0], SizeOf(Integer));
-        SetLength(LenBytes, SizeOf(Integer));
-        Move(LenBuf[0], LenBytes[0], SizeOf(Integer));
-        PipeWrite(LenBytes);
-        PipeWrite(Resp);
-        PipeLog('productClosed — done');
-        Break;
-      end;
+  while not Terminated and AuthorizedClient do begin
+    if not PipeRead(Header, SizeOf(Integer)) then Exit;
+    Move(Header[0], Size, SizeOf(Integer));
+    if (Size <= 0) or (Size > MAX_PIPE_FRAME) then Exit;
+    if not PipeRead(Body, Size) then Exit;
+    Request := ParseRequest(Body);
+    if not AuthorizedClient then Exit;
+    if (Request.ProductId <> 0) and (Request.ProductId <> FProductId) then Exit;
+    case Request.ReqType of
+      rtGetProductTicket: Response := BuildTicketResponse(Request, FTicket);
+      rtGetSDKConfiguration: Response := BuildSDKConfigResponse(Request, FHashedUserNo);
+      rtProductActive, rtGetClientToken, rtProductClosed: Response := BuildAckResponse(Request);
     else
-      PipeLog('Unknown request: ' + Req.TypeStr);
-      Resp := BuildErrorResponse(Req, -30000005);
+      Response := BuildErrorResponse(Request, -30000005);
     end;
-
-    // Write [length][body]
-    RespLen := Length(Resp);
-    Move(RespLen, LenBuf[0], SizeOf(Integer));
-    SetLength(LenBytes, SizeOf(Integer));
-    Move(LenBuf[0], LenBytes[0], SizeOf(Integer));
-    if not PipeWrite(LenBytes) then
-    begin
-      PipeLog('Write length failed');
-      Break;
-    end;
-    if not PipeWrite(Resp) then
-    begin
-      PipeLog('Write body failed');
-      Break;
-    end;
-    PipeLog('Response sent for: ' + Req.TypeStr);
+    Size := Length(Response);
+    SetLength(Header, SizeOf(Integer)); Move(Size, Header[0], SizeOf(Integer));
+    if not PipeWrite(Header) or not PipeWrite(Response) then Exit;
+    if Request.ReqType = rtProductClosed then Exit;
   end;
 end;
 

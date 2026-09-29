@@ -12,15 +12,15 @@
     0xbeef0005  getClientToken(buf, size)  -> Int  (fills WCHAR buf)
     0xbeef0006  stub(buf, size)            -> Int
 
-  Ticket IPC: launcher writes UTF-8 ticket to %TEMP%\nxl3p_ticket.txt before
-  launching Client.exe. ShimInit (0xbeef0001) reads it on first call.
+  Ticket IPC: a user-restricted, per-launch memory mapping. No ticket file.
 *)
 
 {$WARN SYMBOL_PLATFORM OFF}
 {$WARN UNIT_PLATFORM OFF}
 
 uses
-  Winapi.Windows;
+  Winapi.Windows, System.SysUtils,
+  uLaunchSecurity in 'src\units\uLaunchSecurity.pas';
 
 var
   GTicket:       array[0..1023] of WideChar;
@@ -99,12 +99,8 @@ end;
 // 0xbeef0001  called from nxapi2_init(*param_1) during game startup
 function ShimInit(Param: UInt64): Integer; stdcall;
 var
-  TempDir:  array[0..MAX_PATH]       of WideChar;
-  FilePath: array[0..MAX_PATH + 32]  of WideChar;
-  hFile:    THandle;
-  Buf:      array[0..4095]           of Byte;
-  Read:     DWORD;
-  ReadyEv:  THandle;
+  Ticket, MappingName: string;
+  ReadyEv: THandle;
 begin
   ShimLog('ShimInit called');
   Result   := 0; // 0 = success per nxapi2_init convention
@@ -116,40 +112,21 @@ begin
   if (GProductIdStr[0] = #0) or (Param > $FFFF) then
     UInt64ToWide(10200, @GProductIdStr[0], Length(GProductIdStr));
 
-  // Read ticket from %TEMP%\nxl3p_ticket.txt, delete immediately after read
-  // to minimise exposure window (file only needs to exist for seconds)
-  GetTempPathW(MAX_PATH, @TempDir[0]);
-  lstrcpyW(@FilePath[0], @TempDir[0]);
-  lstrcatW(@FilePath[0], 'nxl3p_ticket.txt');
-
-  hFile := CreateFileW(@FilePath[0], GENERIC_READ, FILE_SHARE_READ, nil,
-    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-  if hFile = INVALID_HANDLE_VALUE then
-    ShimLog('ShimInit: ticket file not found')
-  else
-  begin
-    FillMemory(@Buf[0], SizeOf(Buf), 0);
-    ReadFile(hFile, Buf[0], SizeOf(Buf) - 2, Read, nil);
-    CloseHandle(hFile);
-    DeleteFileW(@FilePath[0]); // remove immediately — ticket is sensitive
-    if Read > 0 then begin
-      MultiByteToWideChar(CP_UTF8, 0, PAnsiChar(@Buf[0]), -1,
-        @GTicket[0], Length(GTicket));
-      TrimRight(@GTicket[0]);
-      GInitOK := lstrlenW(@GTicket[0]) > 0;
-      if GInitOK then ShimLog('ShimInit: ticket loaded, file deleted')
-      else ShimLog('ShimInit: ticket empty after read');
-    end else
-      ShimLog('ShimInit: ReadFile returned 0 bytes');
+  MappingName := GetEnvironmentVariable(TICKET_ENV);
+  if ReadPrivateTicket(Ticket) then begin
+    WideAssign(@GTicket[0], Length(GTicket), PWideChar(Ticket));
+    GInitOK := True;
   end;
-
-  // Signal launcher that shim init is done — stub can be killed now
-  ReadyEv := OpenEventW(EVENT_MODIFY_STATE, False, 'NXL3P_ShimReady');
-  if ReadyEv <> 0 then begin
-    SetEvent(ReadyEv);
-    CloseHandle(ReadyEv);
-    ShimLog('ShimInit: NXL3P_ShimReady signalled');
+  if Ticket <> '' then begin
+    UniqueString(Ticket);
+    SecureZeroMemory(PWideChar(Ticket), Length(Ticket) * SizeOf(WideChar));
+    Ticket := '';
   end;
+  if not GInitOK then begin Result := -1; Exit; end;
+  ReadyEv := OpenEventW(EVENT_MODIFY_STATE, False, PWideChar(MappingName + '.Ready'));
+  if ReadyEv = 0 then begin ZeroMemory(@GTicket[0], SizeOf(GTicket)); GInitOK := False; Result := -1; Exit; end;
+  SetEvent(ReadyEv);
+  CloseHandle(ReadyEv);
 end;
 
 // 0xbeef0002  called with NO args from nxapi2_close

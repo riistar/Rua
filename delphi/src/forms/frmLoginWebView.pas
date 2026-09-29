@@ -354,13 +354,7 @@ begin
   SrcLower := LowerCase(Src);
   LblUrl.Caption := Src;
 
-  // Log all navigation URLs for debugging redirect issues.
-  try
-    TFile.AppendAllText(
-      GetEnvironmentVariable('TEMP') + '\nxl_nav_log.txt',
-      FormatDateTime('[hh:nn:ss.zzz] ', Now) + Src + sLineBreak,
-      TEncoding.UTF8);
-  except end;
+  // Do not persist authentication URLs: redirects can contain login secrets.
 
   // Verification pages share the /account/en/login prefix but must be left
   // untouched: the SSO branch below would hide the code input.
@@ -775,7 +769,16 @@ procedure TFormLoginWebView.FinishLogin(const Msg: string);
 begin
   TimerCookies.Enabled := False;
   FLoginDone := True; // set before the modal prompt — blocks re-entrant cookie callbacks
+  // Direct browser paths skip ExchangeTpaForNxLSession, so loginSessionExpiresIn is never
+  // parsed and GLastNxLExpiry stays 0. Apply the server's standard TTL as a fallback.
+  if (LastNxLExpiry = 0) and (Pos('NxLSession', FCookies) > 0) then
+    SetLastNxLExpiry(Now + 28800 / SecsPerDay);
   LblStatus.Caption := Msg;
+  if FindCmdLineSwitch('mooncrest-connect') then
+  begin
+    ModalResult := mrOK;
+    Exit;
+  end;
   if MessageDlg('Login successful.' + sLineBreak + sLineBreak +
        'Close the login window now?' + sLineBreak +
        '(No = keep this page open, e.g. to capture the device verification page. ' +

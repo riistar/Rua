@@ -30,6 +30,47 @@ uses
 
 {$R *.res}
 
+function ConnectMooncrestAccount: Integer;
+var
+  Profiles: TArray<TNexonProfile>;
+  Profile: TNexonProfile;
+  Cookies, Name: string;
+  Number: Integer;
+  Exists: Boolean;
+begin
+  Result := 2; // Cancellation does not save a profile.
+  Profiles := LoadProfiles;
+  Number := 1;
+  repeat
+    Name := 'Nexon account ' + IntToStr(Number);
+    Exists := False;
+    for var Existing in Profiles do
+      if SameText(Existing.Name, Name) then
+        Exists := True;
+    Inc(Number);
+  until not Exists;
+  if not TFormLoginWebView.Execute(Cookies, Name, True) then
+    Exit;
+  if Cookies = '' then
+    Exit(1);
+  Profile := Default(TNexonProfile);
+  Profile.Name := Name;
+  Profile.UserNo := ExtractCookieValue(Cookies, 'NexonUserID');
+  Profile.DeviceId := GetDeviceId(Name);
+  Profile.Products := [10200];
+  if not CredSave(Name, Cookies) then
+    raise Exception.Create('Windows could not save the Nexon session.');
+  try
+    SetLength(Profiles, Length(Profiles) + 1);
+    Profiles[High(Profiles)] := Profile;
+    SaveProfiles(Profiles);
+  except
+    CredDelete(Name);
+    raise;
+  end;
+  Result := 0;
+end;
+
 begin
   // CEF subprocess mode: Chromium relaunches Rua.exe with --type=renderer|gpu-process|...
   // for its helper processes (login browser under Wine). Must run before anything else.
@@ -77,6 +118,19 @@ begin
   else
     TStyleManager.TrySetStyle('Sky');
   Application.Title := 'Rua';
+  // Sign-in only: omit the main window, startup updates and profile-name prompt.
+  if FindCmdLineSwitch('mooncrest-connect') then
+  begin
+    var ConnectResult := 1;
+    try
+      ConnectResult := ConnectMooncrestAccount;
+    except
+      on E: Exception do
+        Application.ShowException(E);
+    end;
+    ShutdownCefRuntime;
+    Halt(ConnectResult);
+  end;
   Application.CreateForm(TFormMain, FormMain);
   Application.Run;
   ShutdownCefRuntime; // no-op unless the CEF login browser was used

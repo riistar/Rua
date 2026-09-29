@@ -1,35 +1,8 @@
 unit uGameLaunch;
-(*
-  Orchestrates game launch.
-
-  ARCHITECTURE (Ghidra RE of nexon_api_x64.dll — nxapi2_init):
-    1. Scans process list for "nexon_client.exe" via CreateToolhelp32Snapshot
-    2. Gets its full path via K32GetModuleFileNameExW
-    3. Strips filename → directory, appends "bin\nexon_x64.dll" → DLL path
-    4. LoadLibraryW(that path) → GetProcAddress("nxapi_get_func_addr")
-    5. Dispatches BEEF codes for init/close/getProductId/getProductTicket/etc.
-
-  STRATEGY:
-    - Write passport ticket to %TEMP%\nxl3p_ticket.txt (shim reads it on ShimInit)
-    - Run nxl3p_stub.exe (renamed nexon_client.exe) so nxapi2_init finds it
-    - Deploy nxl3p_shim.dll as {our_dir}\bin\nexon_x64.dll (fake SDK)
-    - nxapi2_init → finds stub → derives {our_dir}\bin\ path → loads shim
-    - Shim reads ticket, fills GTicket, signals NXL3P_ShimReady
-    - Kill stub after ShimReady (or 30s timeout), game already has ticket
-
-  LAUNCH SEQUENCE:
-    1. CleanupStub      — kill any previous stub, delete deployed files
-    2. FetchAccess + CheckPlayable + FetchPassport
-    3. WriteTicketFile  — %TEMP%\nxl3p_ticket.txt
-    4. Deploy stub as nexon_client.exe in our dir
-    5. Create NXL3P_StubExit + NXL3P_ShimReady events
-    6. Spawn nexon_client.exe
-    7. Deploy nxl3p_shim.dll → {our_dir}\bin\nexon_x64.dll
-    8. FetchGameConfig
-    9. Start pipe server
-   10. ShellExecuteEx Client.exe
-   11. Background: wait ShimReady (30s) → kill stub → wait game exit → cleanup
-*)
+{ Uses a per-launch, user-restricted memory mapping for ticket handoff.
+  Starts the game suspended so its exact process can be authorized by the pipe
+  before it runs. No ticket file is written. The mapping is cleared on failure
+  or after shim initialization (at most 30 seconds). }
 
 interface
 
@@ -62,7 +35,7 @@ implementation
 uses
   Winapi.Windows, Winapi.ShellAPI,
   System.Hash, System.NetEncoding,
-  System.IOUtils;
+  System.IOUtils, uLaunchSecurity;
 
 procedure LaunchLog(const Msg: string);
 begin
@@ -105,16 +78,6 @@ end;
 
 { TGameLauncher }
 
-procedure WriteTicketFile(const Ticket: string);
-var
-  Path:  string;
-  Bytes: TBytes;
-begin
-  Path  := GetEnvironmentVariable('TEMP') + '\nxl3p_ticket.txt';
-  Bytes := TEncoding.UTF8.GetBytes(Ticket);
-  TFile.WriteAllBytes(Path, Bytes);
-end;
-
 procedure TGameLauncher.StopPipe;
 begin
   if FPipeThread <> nil then
@@ -136,7 +99,8 @@ begin
   end;
   if FStubProcess <> 0 then
   begin
-    TerminateProcess(FStubProcess, 0);
+    if WaitForSingleObject(FStubProcess, 2000) = WAIT_TIMEOUT then
+      TerminateProcess(FStubProcess, 0);
     WaitForSingleObject(FStubProcess, 2000);
     CloseHandle(FStubProcess);
     FStubProcess := 0;
@@ -176,8 +140,14 @@ var
   PI: TProcessInformation;
   PlayableStatus: Integer;
   AccessInfo: TAccessInfo;
-  SEI: TShellExecuteInfo;
+  GamePI: TProcessInformation;
+  PrivateTicket: TPrivateTicket;
+  ChildEnvironment: string;
+  SA: TSecurityAttributes;
+  ErrorCode: DWORD;
   ShimReadyEv: THandle;
+  StubEventName: string;
+  StubGuid: TGUID;
 begin
   PidStr  := IntToStr(ProductId);
   GameDir := ExtractFileDir(GameExePath);
@@ -185,6 +155,11 @@ begin
 
   // 1. Clean up previous deployment
   CleanupStub;
+
+  // Validate deployment before requesting an authentication ticket.
+  if not TFile.Exists(OurDir + '\nxl3p_stub.exe') or
+     not TFile.Exists(OurDir + '\nxl3p_shim.dll') then
+    raise Exception.Create('Rua launch helpers are missing. Repair the installation before signing in.');
 
   // 2. Auth: /account → /access → /playable → /passport (official launcher sequence).
   // /account returns Set-Cookie headers that establish the server-side session scope.
@@ -218,11 +193,14 @@ begin
 
   Ticket := FetchTicket(AuthCookies, ProductId);
   Hashed := HashUserNo(UserNo);
-  LaunchLog('Ticket: ' + Copy(Ticket, 1, 40) + '...');
+  LaunchLog('Launch ticket received');
 
-  // 3. Write passport ticket to temp file — shim reads it in ShimInit
-  WriteTicketFile(Ticket);
-  LaunchLog('Ticket file written');
+  PrivateTicket := nil;
+  ShimReadyEv := 0;
+  ZeroMemory(@GamePI, SizeOf(GamePI));
+  try
+  try
+  PrivateTicket := TPrivateTicket.Create(Ticket);
 
   // 4. Deploy stub as nexon_client.exe in our dir
   StubSrc := OurDir + '\nxl3p_stub.exe';
@@ -235,23 +213,44 @@ begin
 
   // 5. Create named events BEFORE spawning stub/game.
   if FStubExitEvent <> 0 then begin CloseHandle(FStubExitEvent); FStubExitEvent := 0; end;
-  FStubExitEvent := CreateEventW(nil, True, False, 'NXL3P_StubExit');
-  ShimReadyEv    := CreateEventW(nil, True, False, 'NXL3P_ShimReady');
-  ResetEvent(ShimReadyEv);
+  ZeroMemory(@SA, SizeOf(SA));
+  SA.nLength := SizeOf(SA);
+  SA.lpSecurityDescriptor := UserOnlyDescriptor;
+  try
+    if CreateGUID(StubGuid) <> 0 then
+      raise Exception.Create('Could not create launch event identifier');
+    StubEventName := 'Local\Mooncrest.Rua.Stub.' + GUIDToString(StubGuid);
+    FStubExitEvent := CreateEventW(@SA, True, False, PWideChar(StubEventName));
+    ErrorCode := GetLastError;
+    if FStubExitEvent = 0 then RaiseLastOSError(ErrorCode);
+    if ErrorCode = ERROR_ALREADY_EXISTS then begin
+      CloseHandle(FStubExitEvent); FStubExitEvent := 0;
+      raise Exception.Create('Another launcher owns the stub event');
+    end;
+    ShimReadyEv := CreateEventW(@SA, True, False, PWideChar(PrivateTicket.Name + '.Ready'));
+    ErrorCode := GetLastError;
+    if ShimReadyEv = 0 then RaiseLastOSError(ErrorCode);
+    if ErrorCode = ERROR_ALREADY_EXISTS then
+      raise Exception.Create('Launch initialization event collision');
+  finally
+    LocalFree(HLOCAL(SA.lpSecurityDescriptor));
+  end;
 
   // 6. Spawn stub
   ZeroMemory(@SI, SizeOf(SI));
   SI.cb := SizeOf(SI);
-  CmdLine := '"' + StubDst + '"';
+  CmdLine := '"' + StubDst + '" --exit-event "' + StubEventName +
+    '" --parent-pid ' + UIntToStr(GetCurrentProcessId);
   UniqueString(CmdLine);
   ZeroMemory(@PI, SizeOf(PI));
-  if CreateProcessW(nil, PWideChar(CmdLine), nil, nil, False,
+  if CreateProcessW(PWideChar(StubDst), PWideChar(CmdLine), nil, nil, False,
       CREATE_NO_WINDOW, nil, nil, SI, PI) then
   begin
     CloseHandle(PI.hThread);
     FStubProcess := PI.hProcess;
     LaunchLog('Stub spawned PID=' + IntToStr(PI.dwProcessId));
-    Sleep(300);
+    if WaitForSingleObject(FStubProcess, 300) <> WAIT_TIMEOUT then
+      raise Exception.Create('Rua compatibility helper exited during setup');
   end
   else
     raise Exception.CreateFmt('Stub spawn failed err=%d', [GetLastError]);
@@ -273,49 +272,37 @@ begin
   SubstitutePassport(Params, Ticket);
   CL       := BuildCommandLine(GameExePath, Params);
   ParamStr := Trim(Copy(CL, Length('"' + GameExePath + '"') + 1, MaxInt));
-  LaunchLog('Launch params: ' + ParamStr);
+  LaunchLog('Starting game client');
 
-  // 9. Pipe server (handles getProductTicket / getSDKConfiguration callbacks)
+  // Bind authentication to the exact new process before any game code runs.
+  ChildEnvironment := TicketEnvironment(PrivateTicket.Name);
+  ZeroMemory(@SI, SizeOf(SI)); SI.cb := SizeOf(SI);
+  SI.dwFlags := STARTF_USESHOWWINDOW; SI.wShowWindow := SW_SHOWNORMAL;
+  UniqueString(CL);
+  if not CreateProcessW(PWideChar(GameExePath), PWideChar(CL), nil, nil, False,
+    CREATE_SUSPENDED or CREATE_UNICODE_ENVIRONMENT, PWideChar(ChildEnvironment),
+    PWideChar(GameDir), SI, GamePI) then RaiseLastOSError;
   StopPipe;
-  FPipeThread := TPipeServerThread.Create(Ticket, Hashed, ProductId);
+  FPipeThread := TPipeServerThread.Create(Ticket, Hashed, ProductId, GamePI.hProcess);
   FPipeThread.Start;
-  Sleep(100);
-
-  // 10. Launch game
-  ZeroMemory(@SEI, SizeOf(SEI));
-  SEI.cbSize       := SizeOf(SEI);
-  SEI.fMask        := SEE_MASK_NOCLOSEPROCESS;
-  SEI.lpFile       := PChar(GameExePath);
-  SEI.lpParameters := PChar(ParamStr);
-  SEI.lpDirectory  := PChar(GameDir);
-  SEI.nShow        := SW_SHOWNORMAL;
+  if ResumeThread(GamePI.hThread) = DWORD(-1) then RaiseLastOSError;
+  CloseHandle(GamePI.hThread); GamePI.hThread := 0;
+  if WaitForSingleObject(ShimReadyEv, 30000) <> WAIT_OBJECT_0 then
+    raise Exception.Create('Secure game initialization timed out');
+  FreeAndNil(PrivateTicket);
+  CloseHandle(ShimReadyEv); ShimReadyEv := 0;
   FGameRunning := True;
-  if not ShellExecuteEx(@SEI) then
-  begin
-    FGameRunning := False;
-    CloseHandle(ShimReadyEv);
-    raise Exception.CreateFmt('ShellExecuteEx failed (%d): %s', [GetLastError, GameExePath]);
-  end;
-  LaunchLog('Client.exe launched PID=' + IntToStr(GetProcessId(SEI.hProcess)));
 
   // 11. Background thread: wait game exit → cleanup
   var TKillProc    := FStubProcess;   FStubProcess   := 0;
   var TKillEvent   := FStubExitEvent; FStubExitEvent := 0;
   var TKillPath    := FStubPath;      FStubPath      := '';
   var TKillShim    := FShimPath;      FShimPath      := '';
-  var TReadyEv     := ShimReadyEv;
-  var TGameProc    := SEI.hProcess;
+  var TGameProc    := GamePI.hProcess;
 
   TThread.CreateAnonymousThread(procedure
   var Code: DWORD;
   begin
-    if TReadyEv <> 0 then
-    begin
-      WaitForSingleObject(TReadyEv, 30000);
-      CloseHandle(TReadyEv);
-    end;
-    LaunchLog('ShimReady or timeout — stub alive until game exit');
-
     if TGameProc <> 0 then
     begin
       WaitForSingleObject(TGameProc, INFINITE);
@@ -326,7 +313,7 @@ begin
     end;
 
     if TKillEvent <> 0 then begin SetEvent(TKillEvent); Sleep(200); CloseHandle(TKillEvent); end;
-    if TKillProc  <> 0 then begin TerminateProcess(TKillProc, 0); WaitForSingleObject(TKillProc, 2000); CloseHandle(TKillProc); end;
+    if TKillProc <> 0 then begin if WaitForSingleObject(TKillProc, 2000) = WAIT_TIMEOUT then TerminateProcess(TKillProc, 0); WaitForSingleObject(TKillProc, 2000); CloseHandle(TKillProc); end;
     try if TKillPath <> '' then TFile.Delete(TKillPath); except end;
     try if TKillShim <> '' then TFile.Delete(TKillShim); except end;
     LaunchLog('Cleanup done');
@@ -336,6 +323,23 @@ begin
     if Assigned(ExitCB) then
       TThread.Queue(nil, procedure begin ExitCB(Self); end);
   end).Start;
+  GamePI.hProcess := 0; // session monitor owns this handle now
+  except
+    FGameRunning := False;
+    if GamePI.hProcess <> 0 then begin
+      TerminateProcess(GamePI.hProcess, 1);
+      WaitForSingleObject(GamePI.hProcess, 5000);
+      CloseHandle(GamePI.hProcess);
+    end;
+    if GamePI.hThread <> 0 then CloseHandle(GamePI.hThread);
+    StopPipe;
+    CleanupStub;
+    raise;
+  end;
+  finally
+    PrivateTicket.Free;
+    if ShimReadyEv <> 0 then CloseHandle(ShimReadyEv);
+  end;
 end;
 
 end.

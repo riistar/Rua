@@ -16,7 +16,7 @@ unit uNexonAPI;
 interface
 
 uses
-  System.SysUtils, System.Classes, System.DateUtils, System.IOUtils,
+  System.SysUtils, System.Classes, System.DateUtils,
   System.StrUtils, System.Net.HttpClient, System.Net.URLClient, System.JSON,
   Winapi.Windows;
 
@@ -105,9 +105,19 @@ function LoginEmailPassword(const Email, Password, DeviceId: string): string;
 function LoginOTP(const MfaKey, Otp, DeviceId: string): string;
 
 // Refresh session via autologin (email/password accounts only — TPA returns error 20182).
-// Returns new NxLSession cookie string on success, '' on failure.
+// Returns new cookie string on success, '' on failure.
+// NxLExpiry receives the NxLSession Max-Age as a TDateTime (0 if unknown).
 function AutoLoginRefresh(const NxLSession, DeviceId: string;
-  out HttpStatus: Integer): string;
+  out HttpStatus: Integer; out NxLExpiry: TDateTime): string;
+
+// Returns the NxLSession expiry TDateTime captured by the most recent login call.
+// 0 if the last login did not return a Max-Age (browser-captured sessions, unknown).
+function LastNxLExpiry: TDateTime;
+
+// Set the expected NxLSession expiry manually (for browser-direct paths that skip
+// the exchange endpoint and therefore have no loginSessionExpiresIn in the response).
+// Pass 0 to clear.
+procedure SetLastNxLExpiry(Expiry: TDateTime);
 
 implementation
 
@@ -117,7 +127,8 @@ const
   ARENA_VER   = 'nxl-v2.71.0-c228c50d';
 
 var
-  GSessionId: string;
+  GSessionId:    string;
+  GLastNxLExpiry: TDateTime;
 
 // Extract a single value from a 'Name=Value; Name2=Value2' cookie string.
 function ExtractCookieVal(const Cookies, Name: string): string;
@@ -135,6 +146,49 @@ begin
       Result := Trim(Copy(Trim(Part), EqPos + 1, MaxInt));
       Exit;
     end;
+  end;
+end;
+
+// Returns Max-Age seconds for CookieName from CookieManager or raw Set-Cookie header.
+// Returns 0 if not found or cookie has no Max-Age.
+function ParseCookieMaxAge(const Resp: IHTTPResponse; const Http: THTTPClient;
+  const CookieName: string): Int64;
+var
+  H:     TNameValuePair;
+  Parts: TArray<string>;
+  Part:  string;
+  MA:    Int64;
+  NV:    string;
+  EqPos: Integer;
+  I:     Integer;
+  Secs:  Int64;
+begin
+  Result := 0;
+
+  if (Http <> nil) and (Http.CookieManager <> nil) then
+    for var C in Http.CookieManager.Cookies do
+      if SameText(C.Name, CookieName) and (C.Expires > 2) then
+      begin
+        Secs := Round((C.Expires - Now) * SecsPerDay);
+        if Secs > 0 then Exit(Secs) else Exit(0);
+      end;
+
+  for H in Resp.Headers do
+  begin
+    if not SameText(H.Name, 'Set-Cookie') then Continue;
+    Parts := H.Value.Split([';']);
+    if Length(Parts) = 0 then Continue;
+    NV    := Trim(Parts[0]);
+    EqPos := Pos('=', NV);
+    if (EqPos <= 0) or not SameText(Trim(Copy(NV, 1, EqPos - 1)), CookieName) then Continue;
+    for I := 1 to High(Parts) do
+    begin
+      Part := Trim(Parts[I]);
+      if SameText(Copy(Part, 1, 8), 'Max-Age=') then
+        if TryStrToInt64(Trim(Copy(Part, 9, MaxInt)), MA) and (MA > 0) then
+          Exit(MA);
+    end;
+    Break;
   end;
 end;
 
@@ -187,26 +241,16 @@ begin
     Http.Free;
   end;
 
-  try
-    TFile.WriteAllText(
-      GetEnvironmentVariable('TEMP') + '\nexon_passport_debug.txt',
-      Format('[Passport Request]'#13#10
-           + 'Cookies: %s'#13#10
-           + '[Passport Response] HTTP %d'#13#10'%s', [
-        Cookies,
-        Resp.StatusCode, Resp.ContentAsString]),
-      TEncoding.UTF8);
-  except end;
   if Resp.StatusCode = 401 then
-    raise ETicketError.CreateFmt('Passport 401: %s', [Resp.ContentAsString]);
+    raise ETicketError.Create('Passport HTTP 401: authentication required');
   if Resp.StatusCode <> 200 then
-    raise ETicketError.CreateFmt('Passport HTTP %d: %s', [Resp.StatusCode, Resp.ContentAsString]);
+    raise ETicketError.CreateFmt('Passport HTTP %d', [Resp.StatusCode]);
 
   J := TJSONObject.ParseJSONValue(Resp.ContentAsString) as TJSONObject;
   if J = nil then raise ETicketError.Create('Invalid passport JSON');
   try
     if not J.TryGetValue<string>('passport', Result) or (Result = '') then
-      raise ETicketError.CreateFmt('No passport in: %s', [Resp.ContentAsString]);
+      raise ETicketError.Create('Passport response did not contain a passport');
   finally
     J.Free;
   end;
@@ -231,12 +275,6 @@ begin
     Http.Free;
   end;
 
-  try
-    TFile.WriteAllText(
-      GetEnvironmentVariable('TEMP') + '\nexon_gameconfig_debug.txt',
-      Format('[GameConfig] HTTP %d'#13#10'%s', [Resp.StatusCode, Resp.ContentAsString]),
-      TEncoding.UTF8);
-  except end;
   if Resp.StatusCode <> 200 then
     raise EUpdateCheckError.CreateFmt('HTTP %d fetching game config', [Resp.StatusCode]);
 
@@ -271,12 +309,6 @@ begin
   try
     Resp       := Http.Post(BASE_URL + '/game-auth2/v1/playable', Body);
     HttpStatus := Resp.StatusCode;
-    try
-      TFile.WriteAllText(
-        GetEnvironmentVariable('TEMP') + '\nexon_playable_debug.txt',
-        Format('[Playable] HTTP %d'#13#10'%s', [Resp.StatusCode, Resp.ContentAsString]),
-        TEncoding.UTF8);
-    except end;
   finally
     Body.Free;
     Http.Free;
@@ -387,44 +419,6 @@ begin
   end;
 end;
 
-procedure DumpDebug(const Tag: string; const Resp: IHTTPResponse;
-  const Http: THTTPClient; const ParsedCookies: string;
-  const ReqBody: string = '');
-var
-  Lines: TStringList;
-  H:     TNameValuePair;
-  Path:  string;
-begin
-  try
-    Lines := TStringList.Create;
-    try
-      Lines.Add('[' + Tag + '] HTTP ' + IntToStr(Resp.StatusCode));
-      if ReqBody <> '' then
-      begin
-        Lines.Add('=== REQ BODY ===');
-        Lines.Add(ReqBody);
-      end;
-      Lines.Add('=== RESP HEADERS ===');
-      for H in Resp.Headers do
-        Lines.Add(H.Name + ': ' + H.Value);
-      Lines.Add('=== COOKIE MANAGER ===');
-      if (Http <> nil) and (Http.CookieManager <> nil) then
-        for var C in Http.CookieManager.Cookies do
-          Lines.Add('  ' + C.Name + '=' + C.Value + '  [' + C.Domain + ']')
-      else
-        Lines.Add('  (nil or empty)');
-      Lines.Add('=== PARSED ===');
-      Lines.Add(ParsedCookies);
-      Lines.Add('=== BODY ===');
-      Lines.Add(Resp.ContentAsString);
-      Path := GetEnvironmentVariable('TEMP') + '\nexon_' + LowerCase(Tag) + '_debug.txt';
-      Lines.SaveToFile(Path, TEncoding.UTF8);
-    finally
-      Lines.Free;
-    end;
-  except end;
-end;
-
 function ExchangeTpaForNxLSession(const TpaSession, DeviceId: string;
   out HttpStatus: Integer; out NexonCode: Integer): string;
 const
@@ -465,7 +459,6 @@ begin
     Resp := Http.Post(BASE_URL + '/account/v1/no-auth/login/tpa/launcher', Body);
 
     HttpStatus := Resp.StatusCode;
-    DumpDebug('TPA', Resp, Http, '');  // always dump — captures 401/404 bodies
     if Resp.StatusCode <> 200 then
     begin
       NexonCode := ExtractNexonErrorCode(Resp);
@@ -487,7 +480,6 @@ begin
       finally J.Free; end;
     end;
 
-    DumpDebug('TPA', Resp, Http, Result);
   finally
     Body.Free;
     Http.Free;
@@ -521,7 +513,6 @@ begin
     HttpStatus := Resp.StatusCode;
     NexonCode  := ExtractNexonErrorCode(Resp);
     Result     := Resp.StatusCode = 200;
-    DumpDebug('SessionCheck', Resp, Http, '');
   finally
     Http.Free;
   end;
@@ -544,7 +535,6 @@ var
   H:    TNameValuePair;
   CV:   string;
   SP:   Integer;
-  SetLog: string;
 begin
   Result := Cookies;
   Http := MakeHttp(Cookies);
@@ -553,7 +543,6 @@ begin
     Http.CustomHeaders['Authorization'] := 'Bearer ' + GToken;
   try
     Resp := Http.Get(BASE_URL + '/account/v1/account');
-    SetLog := '';
     for H in Resp.Headers do
       if SameText(H.Name, 'Set-Cookie') then
       begin
@@ -563,10 +552,8 @@ begin
         if CV <> '' then
         begin
           Result := Result + '; ' + CV;
-          SetLog := SetLog + ' [+' + Copy(CV, 1, Pos('=', CV)) + ']';
         end;
       end;
-    DumpDebug('Account', Resp, Http, SetLog);
   finally
     Http.Free;
   end;
@@ -586,7 +573,6 @@ var
   Body:     TStringStream;
   Resp:     IHTTPResponse;
   H:        TNameValuePair;
-  SetLog:   string;
   CookVal:  string;
   SemiPos:  Integer;
   J:        TJSONObject;
@@ -607,7 +593,6 @@ begin
   try
     Resp   := Http.Post(BASE_URL + '/game-auth2/v1/access', Body);
     AccessInfo.HttpStatus := Resp.StatusCode;
-    SetLog := '';
     for H in Resp.Headers do
       if SameText(H.Name, 'Set-Cookie') then
       begin
@@ -617,15 +602,8 @@ begin
         if CookVal <> '' then
         begin
           Result := Result + '; ' + CookVal;
-          SetLog := SetLog + ' [+' + Copy(CookVal, 1, Pos('=', CookVal)) + ']';
         end;
       end;
-    try
-      TFile.WriteAllText(
-        GetEnvironmentVariable('TEMP') + '\nexon_access_debug.txt',
-        Format('[Access] HTTP %d%s'#13#10'%s', [Resp.StatusCode, SetLog, Resp.ContentAsString]),
-        TEncoding.UTF8);
-    except end;
 
     // Parse the access verdict. isPlayable=False => game down / under maintenance.
     // We must NOT require HTTP 200 here: the launcher gates on the body flag.
@@ -676,7 +654,9 @@ const
 var
   J:      TJSONObject;
   Hashed: string;
+  MA:     Int64;
 begin
+  GLastNxLExpiry := 0;
   Result := ParseAuthCookies(Resp, Http, KEEP);
   if Pos('NexonUserID', Result) = 0 then
   begin
@@ -692,6 +672,35 @@ begin
       J.Free;
     end;
   end;
+  if Pos('NxLSession', Result) > 0 then
+  begin
+    // Try body field first (Nexon always returns loginSessionExpiresIn in seconds).
+    // Fall back to Set-Cookie Max-Age if body field absent.
+    J := TJSONObject.ParseJSONValue(BodyStr) as TJSONObject;
+    if J <> nil then
+    try
+      if J.TryGetValue<Int64>('loginSessionExpiresIn', MA) and (MA > 0) then
+        GLastNxLExpiry := Now + MA / SecsPerDay;
+    finally
+      J.Free;
+    end;
+    if GLastNxLExpiry = 0 then
+    begin
+      MA := ParseCookieMaxAge(Resp, Http, 'NxLSession');
+      if MA > 0 then
+        GLastNxLExpiry := Now + MA / SecsPerDay;
+    end;
+  end;
+end;
+
+function LastNxLExpiry: TDateTime;
+begin
+  Result := GLastNxLExpiry;
+end;
+
+procedure SetLastNxLExpiry(Expiry: TDateTime);
+begin
+  GLastNxLExpiry := Expiry;
 end;
 
 function LoginEmailPassword(const Email, Password, DeviceId: string): string;
@@ -725,13 +734,11 @@ begin
     Http.CustomHeaders['Accept']       := 'application/json';
     Resp    := Http.Post(BASE_URL + '/account/v1/no-auth/login/launcher', Body);
     BodyStr := Resp.ContentAsString;
-    DumpDebug('EmailLogin', Resp, Http, '');
 
     case Resp.StatusCode of
       200:
       begin
         Result := CollectAuthCookies(Resp, Http, BodyStr);
-        DumpDebug('EmailLogin', Resp, Http, Result);
       end;
       206:
       begin
@@ -766,7 +773,7 @@ begin
       if IsCaptcha or (Pos('captchaToken', BodyStr) > 0) then
         raise ELoginCaptchaRequired.CreateFmt('Captcha required (code %d)', [ErrCode])
       else
-        raise ELoginFailed.CreateFmt('HTTP %d: %s', [Resp.StatusCode, BodyStr]);
+        raise ELoginFailed.CreateFmt('Login HTTP %d (code %d)', [Resp.StatusCode, ErrCode]);
     end;
   finally
     Body.Free;
@@ -798,13 +805,11 @@ begin
     Http.CustomHeaders['Accept']       := 'application/json';
     Resp    := Http.Post(BASE_URL + '/account/v1/no-auth/login/launcher/otp', Body);
     BodyStr := Resp.ContentAsString;
-    DumpDebug('OTPLogin', Resp, Http, '');
 
     if Resp.StatusCode <> 200 then
-      raise ELoginFailed.CreateFmt('OTP HTTP %d: %s', [Resp.StatusCode, BodyStr]);
+      raise ELoginFailed.CreateFmt('OTP HTTP %d', [Resp.StatusCode]);
 
     Result := CollectAuthCookies(Resp, Http, BodyStr);
-    DumpDebug('OTPLogin', Resp, Http, Result);
   finally
     Body.Free;
     Http.Free;
@@ -812,7 +817,7 @@ begin
 end;
 
 function AutoLoginRefresh(const NxLSession, DeviceId: string;
-  out HttpStatus: Integer): string;
+  out HttpStatus: Integer; out NxLExpiry: TDateTime): string;
 var
   Http:    THTTPClient;
   Body:    TStringStream;
@@ -821,6 +826,7 @@ var
 begin
   Result     := '';
   HttpStatus := 0;
+  NxLExpiry  := 0;
 
   JObj := TJSONObject.Create;
   JObj.AddPair('deviceId',   DeviceId);
@@ -840,11 +846,10 @@ begin
     // Old /account/v1/... returns 404.
     Resp := Http.Post(BASE_URL + '/regional-auth/v1.0/no-auth/login/launcher/autologin', Body);
     HttpStatus := Resp.StatusCode;
-    DumpDebug('AutoLogin', Resp, Http, '');
     if Resp.StatusCode = 200 then
     begin
-      Result := CollectAuthCookies(Resp, Http, Resp.ContentAsString);
-      DumpDebug('AutoLogin', Resp, Http, Result);
+      Result    := CollectAuthCookies(Resp, Http, Resp.ContentAsString);
+      NxLExpiry := LastNxLExpiry;
     end;
   finally
     Body.Free;
