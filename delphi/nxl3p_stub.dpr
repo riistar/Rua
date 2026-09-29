@@ -7,7 +7,7 @@ uses
 
 function Run: Integer;
 const
-  Prefix = 'Local\Mooncrest.Rua.Stub.';
+  Prefix = 'Local\Rua.Stub.';
 var
   EventName, Suffix: string;
   Id: TGUID;

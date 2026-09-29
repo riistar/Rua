@@ -219,7 +219,7 @@ begin
   try
     if CreateGUID(StubGuid) <> 0 then
       raise Exception.Create('Could not create launch event identifier');
-    StubEventName := 'Local\Mooncrest.Rua.Stub.' + GUIDToString(StubGuid);
+    StubEventName := 'Local\Rua.Stub.' + GUIDToString(StubGuid);
     FStubExitEvent := CreateEventW(@SA, True, False, PWideChar(StubEventName));
     ErrorCode := GetLastError;
     if FStubExitEvent = 0 then RaiseLastOSError(ErrorCode);

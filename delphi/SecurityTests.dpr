@@ -66,7 +66,7 @@ var
   ExitCode: DWORD;
   Rejected: Boolean;
 begin
-  CreateGUID(Id); PipeName := '\\.\pipe\Mooncrest.SecurityTest.' + GUIDToString(Id);
+  CreateGUID(Id); PipeName := '\\.\pipe\Rua.SecurityTest.' + GUIDToString(Id);
   CommandLine := '"' + ParamStr(0) + '" --client "' + PipeName + '" ' + Mode;
   UniqueString(CommandLine);
   ZeroMemory(@SI, SizeOf(SI)); SI.cb := SizeOf(SI);

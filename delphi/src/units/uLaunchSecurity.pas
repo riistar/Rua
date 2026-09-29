@@ -87,7 +87,7 @@ begin
        (Length(Ticket) > 1023) or (Pos(#0, Ticket) > 0) then
       raise Exception.Create('Invalid launch ticket length');
     if CreateGUID(Id) <> 0 then raise Exception.Create('Could not allocate ticket identifier');
-    FName := 'Local\Mooncrest.Rua.Ticket.' + GUIDToString(Id);
+    FName := 'Local\Rua.Ticket.' + GUIDToString(Id);
     ZeroMemory(@SA, SizeOf(SA));
     SA.nLength := SizeOf(SA);
     SA.lpSecurityDescriptor := UserOnlyDescriptor;
@@ -164,7 +164,7 @@ begin
   Ticket := '';
   Name := GetEnvironmentVariable(TICKET_ENV);
   SetEnvironmentVariableW(PWideChar(TICKET_ENV), nil);
-  if not StartsStr('Local\Mooncrest.Rua.Ticket.{', Name) or (Length(Name) > 100) then Exit;
+  if not StartsStr('Local\Rua.Ticket.{', Name) or (Length(Name) > 100) then Exit;
   Handle := OpenFileMappingW(FILE_MAP_READ, False, PWideChar(Name));
   if Handle = 0 then Exit;
   try
