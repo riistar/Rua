@@ -5,14 +5,16 @@ param(
     [string]$Release
 )
 
-$Root = Split-Path -LiteralPath $PSScriptRoot -Parent
+$Root = Split-Path $PSScriptRoot
 $DelphiDir = Join-Path $Root 'delphi'
 $ReleaseDir = Join-Path $Root 'release'
+$RsVars = 'C:\Program Files (x86)\Embarcadero\Studio\23.0\bin\rsvars.bat'
 
 function Build-Project($ProjectFile, $Platform, $BuildConfig) {
     $ProjPath = Join-Path $DelphiDir $ProjectFile
     Write-Host "`n=== $ProjectFile ($Platform, $BuildConfig) ===" -ForegroundColor Cyan
-    & msbuild /t:Build "/p:Config=$BuildConfig" "/p:Platform=$Platform" $ProjPath
+    $args = "/t:Build /p:Config=$BuildConfig /p:Platform=$Platform `"$ProjPath`""
+    cmd /c "`"$RsVars`" && msbuild $args"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "FAILED: $ProjectFile ($Platform, $BuildConfig)" -ForegroundColor Red
         exit $LASTEXITCODE

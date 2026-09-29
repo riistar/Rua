@@ -12,13 +12,14 @@ uses
 
 type
   TNexonProfile = record
-    Name:     string;
-    UserNo:   string;
-    DeviceId: string;
-    Email:    string; // cached from account API, populated on re-login or profile edit
-    Products: TArray<Integer>;
-    LastUsed: TDateTime;
-    GameExe:  string; // per-profile override for Client.exe path ('' = use global)
+    Name:      string;
+    UserNo:    string;
+    DeviceId:  string;
+    Email:     string; // cached from account API, populated on re-login or profile edit
+    Products:  TArray<Integer>;
+    LastUsed:  TDateTime;
+    GameExe:   string; // per-profile override for Client.exe path ('' = use global)
+    NxLExpiry: TDateTime; // when NxLSession expires (0 = unknown); set from autologin Max-Age
   end;
 
   TProfileList = TObjectList<TObject>; // use generic list of records via helpers below
@@ -30,6 +31,7 @@ procedure AddOrUpdateProfile(const Profile: TNexonProfile; const Cookies: string
 procedure DeleteProfile(const Name: string);
 function  LoadCookies(const ProfileName: string): string;
 procedure UpdateLastUsed(const ProfileName: string);
+procedure UpdateNxLExpiry(const ProfileName: string; Expiry: TDateTime);
 
 implementation
 
@@ -84,10 +86,13 @@ begin
           for i := 0 to PA.Count - 1 do
             P.Products[i] := (PA.Items[i] as TJSONNumber).AsInt;
         end;
-        // last_used as ISO string
         var LU := Obj.GetValue<string>('last_used', '');
         if LU <> '' then
           try P.LastUsed := ISO8601ToDate(LU); except end;
+        P.NxLExpiry := 0;
+        var NE := Obj.GetValue<string>('nxl_expires', '');
+        if NE <> '' then
+          try P.NxLExpiry := ISO8601ToDate(NE); except end;
         List.Add(P);
       end;
     finally
@@ -126,6 +131,8 @@ begin
         Obj.AddPair('game_exe', P.GameExe);
       if P.LastUsed > 0 then
         Obj.AddPair('last_used', DateToISO8601(P.LastUsed));
+      if P.NxLExpiry > 0 then
+        Obj.AddPair('nxl_expires', DateToISO8601(P.NxLExpiry));
       PA := TJSONArray.Create;
       for ProdId in P.Products do
         PA.Add(ProdId);
@@ -195,6 +202,21 @@ begin
     if Profiles[i].Name = ProfileName then
     begin
       Profiles[i].LastUsed := Now;
+      Break;
+    end;
+  SaveProfiles(Profiles);
+end;
+
+procedure UpdateNxLExpiry(const ProfileName: string; Expiry: TDateTime);
+var
+  Profiles: TArray<TNexonProfile>;
+  i:        Integer;
+begin
+  Profiles := LoadProfiles;
+  for i := 0 to High(Profiles) do
+    if Profiles[i].Name = ProfileName then
+    begin
+      Profiles[i].NxLExpiry := Expiry;
       Break;
     end;
   SaveProfiles(Profiles);
