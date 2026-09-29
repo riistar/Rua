@@ -222,7 +222,10 @@ begin
   begin
     try
       if Enable then
-        RegSetValueEx(RKey, 'Rua', 0, REG_SZ, PByte(ParamStr(0)), (Length(ParamStr(0)) + 1) * 2)
+      begin
+        var Val := '"' + ParamStr(0) + '" --minimized';
+        RegSetValueEx(RKey, 'Rua', 0, REG_SZ, PByte(Val), (Length(Val) + 1) * 2);
+      end
       else
         RegDeleteValue(RKey, 'Rua');
     finally
@@ -588,6 +591,7 @@ begin
   LoadConfig;        // applies the saved Vcl theme
   if Trim(FDefaultGameExe) = '' then
     AutoDetectGame;
+  if FindCmdLineSwitch('minimized') then FStartMinimized := True;
   SetAutoStart(FAutoStart);
   if FAutoCheck then
     DoCheckAndUpdate(True);
