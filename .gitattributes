@@ -1,0 +1,9 @@
+# Linguist overrides — vendor libraries excluded from language stats
+delphi/src/WebView4Delphi/* linguist-vendored
+delphi/src/CEF4Delphi/*     linguist-vendored
+
+# Treat Delphi source as Pascal
+*.pas  linguist-language=Pascal
+*.dpr  linguist-language=Pascal
+*.dpk  linguist-language=Pascal
+*.dfm  linguist-language=Pascal
