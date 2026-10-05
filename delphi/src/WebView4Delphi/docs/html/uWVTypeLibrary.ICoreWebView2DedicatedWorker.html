@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>WebView4Delphi: uWVTypeLibrary: Interface ICoreWebView2DedicatedWorker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="PasDoc 1.0.4">
+<meta http-equiv="content-type" content="text/html; charset=utf-8">
+<link rel="StyleSheet" type="text/css" href="bootstrap.min.css">
+<link rel="StyleSheet" type="text/css" href="pasdoc.css">
+<style type="text/css">
+body { margin: 0.5em; }
+.badge { padding: 0.1em 0.5em; color: white; }
+</style></head>
+<body>
+<span id="ICoreWebView2DedicatedWorker"></span><h1 class="cio">Interface ICoreWebView2DedicatedWorker</h1>
+<div class="sections">
+<div class="one_section"><a class="section" href="#PasDoc-Description">Description</a></div><div class="one_section"><a class="section" href="#PasDoc-Hierarchy">Hierarchy</a></div><div class="one_section"><a class="section" href="#PasDoc-Methods">Methods</a></div></div>
+<span id="PasDoc-Description"></span><h2 class="unit">Unit</h2>
+<p class="unitlink">
+<a href="uWVTypeLibrary.html">uWVTypeLibrary</a></p>
+<h2 class="declaration">Declaration</h2>
+<p class="declaration">
+<code>type ICoreWebView2DedicatedWorker = interface(IUnknown)</code></p>
+<h2 class="description">Description</h2>
+<p>
+ This interface represents a dedicated worker in WebView2 and provides methods and properties for interacting with it, such as getting the script uri, posting messages, managing events related to the creation of child workers, termination etc. </p>
+<p>
+
+
+<p>&lt;see href=&quot;<a href="https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2dedicatedworker">https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2dedicatedworker</a>&quot;&gt;See the ICoreWebView2DedicatedWorker article.)</p>
+<span id="PasDoc-Hierarchy"></span><h2 class="hierarchy">Hierarchy</h2>
+<ul class="hierarchy"><li class="ancestor">IUnknown</li>
+<li class="thisitem">ICoreWebView2DedicatedWorker</li></ul><h2 class="overview">Overview</h2>
+<span id="PasDoc-Methods"></span><h3 class="summary">Methods</h3>
+<table class="summary wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2DedicatedWorker.html#Get_ScriptUri-PWideChar-">Get_ScriptUri</a></strong>(out value: PWideChar): HResult; stdcall;</code></td>
+</tr>
+<tr class="list2 visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2DedicatedWorker.html#add_DedicatedWorkerCreated-ICoreWebView2DedicatedWorkerDedicatedWorkerCreatedEventHandler-EventRegistrationToken-">add_DedicatedWorkerCreated</a></strong>(const eventHandler: <a href="uWVTypeLibrary.ICoreWebView2DedicatedWorkerDedicatedWorkerCreatedEventHandler.html">ICoreWebView2DedicatedWorkerDedicatedWorkerCreatedEventHandler</a>; out token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2DedicatedWorker.html#remove_DedicatedWorkerCreated-EventRegistrationToken-">remove_DedicatedWorkerCreated</a></strong>(token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr class="list2 visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2DedicatedWorker.html#add_Destroying-ICoreWebView2DedicatedWorkerDestroyingEventHandler-EventRegistrationToken-">add_Destroying</a></strong>(const eventHandler: <a href="uWVTypeLibrary.ICoreWebView2DedicatedWorkerDestroyingEventHandler.html">ICoreWebView2DedicatedWorkerDestroyingEventHandler</a>; out token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2DedicatedWorker.html#remove_Destroying-EventRegistrationToken-">remove_Destroying</a></strong>(token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr class="list2 visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2DedicatedWorker.html#add_WebMessageReceived-ICoreWebView2DedicatedWorkerWebMessageReceivedEventHandler-EventRegistrationToken-">add_WebMessageReceived</a></strong>(const eventHandler: <a href="uWVTypeLibrary.ICoreWebView2DedicatedWorkerWebMessageReceivedEventHandler.html">ICoreWebView2DedicatedWorkerWebMessageReceivedEventHandler</a>; out token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2DedicatedWorker.html#remove_WebMessageReceived-EventRegistrationToken-">remove_WebMessageReceived</a></strong>(token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr class="list2 visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2DedicatedWorker.html#PostWebMessageAsJson-PWideChar-">PostWebMessageAsJson</a></strong>(webMessageAsJson: PWideChar): HResult; stdcall;</code></td>
+</tr>
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><code>function <strong><a href="uWVTypeLibrary.ICoreWebView2DedicatedWorker.html#PostWebMessageAsString-PWideChar-">PostWebMessageAsString</a></strong>(webMessageAsString: PWideChar): HResult; stdcall;</code></td>
+</tr>
+</table>
+<h2 class="description">Description</h2>
+<h3 class="detail">Methods</h3>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="Get_ScriptUri-PWideChar-"></span><code>function <strong>Get_ScriptUri</strong>(out value: PWideChar): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ A string representing the Uri of the script that the worker is executing.
+
+<p>The `scriptUri` is a fully qualified URI, including the scheme, host, and path. In contrast, the `scriptURL` property of the `Worker` object in the DOM returns the relative URL of the script being executed by the worker. For more details on DOM API, see the [DOM API documentation](<a href="https://developer.mozilla.org/docs/Web/API/Worker/scriptURL">https://developer.mozilla.org/docs/Web/API/Worker/scriptURL</a>).
+
+<p>Refer to the Host Name Canonicalization for details on how normalization is performed. The same process applies to the `scriptURL` when a worker is created from DOM API. The `scriptUri` property reflects this normalization, ensuring that the URL is standardized. For example, `<a href="HTTPS://EXAMPLE.COM/worker.js">HTTPS://EXAMPLE.COM/worker.js</a>` is canonicalized to `<a href="https://example.com/worker.js">https://example.com/worker.js</a>`; `<a href="https://b">https://b</a>ücher.de/worker.js` is canonicalized to `<a href="https://xn--bcher-kva.de/worker.js">https://xn--bcher-kva.de/worker.js</a>`.
+
+<p>The caller must free the returned string with `CoTaskMemFree`. See [API Conventions](/microsoft-edge/webview2/concepts/win32-api-conventions#strings). </p>
+<h6 class="description_section">Attributes</h6>
+<dl class="attributes">
+  <dt>GUID['{66833876-EDBA-5A60-8508-7DA64504A9D2}']</dt>
+  <dd></dd>
+</dl>
+</td></tr>
+</table>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="add_DedicatedWorkerCreated-ICoreWebView2DedicatedWorkerDedicatedWorkerCreatedEventHandler-EventRegistrationToken-"></span><code>function <strong>add_DedicatedWorkerCreated</strong>(const eventHandler: <a href="uWVTypeLibrary.ICoreWebView2DedicatedWorkerDedicatedWorkerCreatedEventHandler.html">ICoreWebView2DedicatedWorkerDedicatedWorkerCreatedEventHandler</a>; out token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Adds an event handler for the `DedicatedWorkerCreated` event. Subscribe to this event that gets raised when a new dedicated worker is created from a dedicated worker.
+
+<p>A Dedicated Worker is a type of web worker that allows you to run Javascript code in the background without blocking the main thread, making them useful for tasks like heavy computations, data processing, and parallel execution. It is &quot;dedicated&quot; because it is linked to a single parent document and cannot be shared with other scripts.
+
+<p>This event is raised when a dedicated creates a dedicated worker using the `new Worker(&quot;/worker.js&quot;)` method. See the [Worker](<a href="https://developer.mozilla.org/docs/Web/API/Worker/Worker">https://developer.mozilla.org/docs/Web/API/Worker/Worker</a>) for more information. </p>
+</td></tr>
+</table>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="remove_DedicatedWorkerCreated-EventRegistrationToken-"></span><code>function <strong>remove_DedicatedWorkerCreated</strong>(token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Removes an event handler previously added with `add_DedicatedWorkerCreated`. </p>
+</td></tr>
+</table>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="add_Destroying-ICoreWebView2DedicatedWorkerDestroyingEventHandler-EventRegistrationToken-"></span><code>function <strong>add_Destroying</strong>(const eventHandler: <a href="uWVTypeLibrary.ICoreWebView2DedicatedWorkerDestroyingEventHandler.html">ICoreWebView2DedicatedWorkerDestroyingEventHandler</a>; out token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Adds an event handler for the `Destroying` event. Add an event handler for the `Destroying` event that is raised when the worker object is Destroying.
+
+<p>A worker object is Destroying when the worker script is terminated or when the `CoreWebView2DedicatedWorker` object is Destroying.
+
+<p>If the worker has already been destroyed before the event handler is registered, the handler will never be called. </p>
+</td></tr>
+</table>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="remove_Destroying-EventRegistrationToken-"></span><code>function <strong>remove_Destroying</strong>(token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Removes an event handler previously added with `add_Destroying`. </p>
+</td></tr>
+</table>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="add_WebMessageReceived-ICoreWebView2DedicatedWorkerWebMessageReceivedEventHandler-EventRegistrationToken-"></span><code>function <strong>add_WebMessageReceived</strong>(const eventHandler: <a href="uWVTypeLibrary.ICoreWebView2DedicatedWorkerWebMessageReceivedEventHandler.html">ICoreWebView2DedicatedWorkerWebMessageReceivedEventHandler</a>; out token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Adds an event handler for the `WebMessageReceived` event. Add an event handler for the `WebMessageReceived` event. `WebMessageReceived` is fired, when the `ICoreWebView2Settings::IsWebMessageEnabled` setting is set TRUE and the worker runs `self.chrome.webview.postMessage`. The `postMessage` function is `void postMessage(object)` where object is any object supported by JSON conversion.
+
+<p>If the worker calls `postMessage` multiple times, the corresponding `WebMessageReceived` events are guaranteed to be fired in the same order.
+
+<p>\snippet ScenarioDedicatedWorkerPostMessage.cpp WebMessageReceived </p>
+</td></tr>
+</table>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="remove_WebMessageReceived-EventRegistrationToken-"></span><code>function <strong>remove_WebMessageReceived</strong>(token: <a href="uWVTypeLibrary.EventRegistrationToken.html">EventRegistrationToken</a>): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Removes an event handler previously added with `add_WebMessageReceived`. </p>
+</td></tr>
+</table>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="PostWebMessageAsJson-PWideChar-"></span><code>function <strong>PostWebMessageAsJson</strong>(webMessageAsJson: PWideChar): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Posts the specified webMessageAsJson to this worker. The worker receives the message by subscribing to the `message` event of the `self.chrome.webview` of the worker.
+
+<p>```cpp self.chrome.webview.addEventListener('message', handler) self.chrome.webview.removeEventListener('message', handler) ```
+
+<p>The event args is an instance of `MessageEvent`. The `ICoreWebView2Settings::IsWebMessageEnabled` setting must be `TRUE` or the web message will not be sent. The `data` property of the event arg is the `webMessageAsJson` string parameter parsed as a JSON string into a JS object. The `source` property of the event arg is the path to the worker script. The message is delivered asynchronously. If the worker is terminated or destroyed before the message is posted, the message is discarded. Worker Javascript may subscribe and unsubscribe to the event using the following code: ```javascript self.chrome.webview.addEventListener('message', handler) self.chrome.webview.removeEventListener('message', handler) ``` ```cpp See also the equivalent methods: `ICoreWebView2::PostWebMessageAsJson`, `ICoreWebView2Frame::PostWebMessageAsJson`, `ICoreWebView2ServiceWorker::PostWebMessageAsJson`. ```
+
+<p>\snippet ScenarioDedicatedWorkerPostMessage.cpp PostWebMessageAsJson </p>
+</td></tr>
+</table>
+<table class="detail visibility-public wide_list">
+<tr class="list visibility-public">
+<td class="visibility"><span class="badge vis-public">Public</span></td>
+<td class="itemcode"><span id="PostWebMessageAsString-PWideChar-"></span><code>function <strong>PostWebMessageAsString</strong>(webMessageAsString: PWideChar): HResult; stdcall;</code></td>
+</tr>
+<tr><td colspan="2">
+<p>
+ Posts a message that is a simple string rather than a JSON string representation of a JavaScript object. This behaves exactly the same manner as `PostWebMessageAsJson`, but the `data` property of the event arg of the `self.chrome.webview` message is a string with the same value as `webMessageAsString`. Use this instead of `PostWebMessageAsJson` if you want to communicate using simple strings rather than JSON objects. Please see `PostWebMessageAsJson` for additional information. ```cpp See also the equivalent methods: `ICoreWebView2::PostWebMessageAsString`, `ICoreWebView2Frame::PostWebMessageAsString`, `ICoreWebView2ServiceWorker::PostWebMessageAsString`. ``` </p>
+</td></tr>
+</table>
+<hr><span class="appinfo"><em>Generated by <a href="https://pasdoc.github.io/">PasDoc 1.0.4</a>. </em>
+</span>
+</body></html>

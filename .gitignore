@@ -1,0 +1,19 @@
+# Delphi build outputs
+*.dcu
+*.exe
+*.dll
+*.bpl
+*.dcp
+*.res
+*.dres
+*.map
+*.local
+__history/
+__recovery/
+*.identcache
+*.tvsconfig
+*.dsk
+
+# BCC/DCC compiler copies
+bcc/
+dcc/

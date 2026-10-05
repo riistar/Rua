@@ -1,0 +1,2005 @@
+﻿unit frmMain;
+
+interface
+
+uses
+  Winapi.Windows, Winapi.Messages,
+  System.SysUtils, System.Classes, System.IOUtils, System.Types, System.SyncObjs,
+  System.JSON, System.Generics.Collections, System.DateUtils, System.Math, IniFiles,
+  Vcl.Graphics, Vcl.Controls, Vcl.Forms, Vcl.Dialogs,
+  Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.ComCtrls, Vcl.Menus, Vcl.Buttons,
+  uProfiles, uGameLaunch, uNexonAPI, uDeviceId, uNewsFeed, uNewsFeedCtl, Vcl.Imaging.pngimage,
+  System.ImageList, Vcl.ImgList, uHeaderPageControl, uIgnoreList;
+
+const
+  SESSION_CACHE_SECS = 300; // re-check after 5 minutes max
+
+type
+  TSessionInfo = record
+    Valid:     Boolean;
+    HttpCode:  Integer;
+    CheckedAt: TDateTime;
+  end;
+
+  TFormMain = class(TForm)
+    MainMenu:     TMainMenu;
+    MenuFile:         TMenuItem;
+    MenuAddProfile:   TMenuItem;
+    MenuEditProfile:  TMenuItem;
+    MenuDeleteProfile: TMenuItem;
+    MenuSep1:         TMenuItem;
+    MenuRefreshToken: TMenuItem;
+    MenuSettings:     TMenuItem;
+    MenuExit:         TMenuItem;
+    PnlTop:       TPanel;
+    PnlLeft:      TPanel;
+    LvProfiles:   TListView;
+    PnlProfileBtns:   TPanel;
+    BtnAddProfile:    TButton;
+    BtnEditProfile:   TButton;
+    BtnRemoveProfile: TButton;
+    PopupProfile: TPopupMenu;
+    PopAdd:       TMenuItem;
+    PopEdit:      TMenuItem;
+    PopDelete:    TMenuItem;
+    PnlRight:     TPanel;
+    StatusBar:    TStatusBar;
+    Panel1: TPanel;
+    ImageList1: TImageList;
+    N1: TMenuItem;
+    UpdateLogin: TMenuItem;
+    Button1: TButton;
+    ReLogin1: TMenuItem;
+    Panel2: TPanel;
+    BtnLaunch: TButton;
+    BtnCheckUpdate: TButton;
+    Panel3: TPanel;
+    LblProgress: TLabel;
+    PrgUpdate: TProgressBar;
+    PageControl1: TPageControl;
+    TabSheet1: TTabSheet;
+    NewsScroll: TScrollBox;
+    TabSheet2: TTabSheet;
+    MemoLog: TMemo;
+    Rua: TImage;
+    procedure FormCreate(Sender: TObject);
+    procedure FormShow(Sender: TObject);
+    procedure FormDestroy(Sender: TObject);
+    procedure FormClose(Sender: TObject; var Action: TCloseAction);
+    procedure MenuAddProfileClick(Sender: TObject);
+    procedure MenuEditProfileClick(Sender: TObject);
+    procedure MenuDeleteProfileClick(Sender: TObject);
+    procedure MenuRefreshTokenClick(Sender: TObject);
+    procedure MenuSettingsClick(Sender: TObject);
+    procedure MenuExitClick(Sender: TObject);
+    procedure BtnAddProfileClick(Sender: TObject);
+    procedure BtnEditProfileClick(Sender: TObject);
+    procedure BtnRemoveProfileClick(Sender: TObject);
+    procedure BtnLaunchClick(Sender: TObject);
+    procedure BtnCheckUpdateClick(Sender: TObject);
+    procedure ToggleUpdatePause;
+    procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
+    procedure LvProfilesSelectItem(Sender: TObject; Item: TListItem;
+      Selected: Boolean);
+    procedure UpdateLoginClick(Sender: TObject);
+  private
+    FLauncher:       TGameLauncher;
+    FDefaultGameExe: string;
+    FProductId:      Integer;
+    FVerbose:        Boolean;
+    FTheme:          string;
+    FAutoCheck:      Boolean;
+    FAutoUpdate:     Boolean;
+    FAutoStart:      Boolean;
+    FStartMinimized: Boolean;
+    FTrayOnLaunch:   Boolean;
+    FRememberLastProfile: Boolean;
+    FLastSelectedProfile: string;
+    FSortAlpha:      Boolean;
+    FSessionCache:   TDictionary<string, TSessionInfo>;
+    FTrayIcon:        TTrayIcon;
+    FTrayMenu:        TPopupMenu;
+    FTrayProfilesSub: TMenuItem; // "Launch Profile" submenu — rebuilt on profile changes
+    FUpdateMenu:      TPopupMenu;
+    FPauseEvent:      TEvent;
+    FCancelDownload:  Boolean;
+    FDownloadActive:  Boolean;
+    FUpdateAvailable: Boolean; // set by the hash-only auto check (skip-dir-scan)
+    FLastProgMs:      Int64;   // throttles progress UI updates (~5/sec)
+    FSessionStart:    TDateTime; // when the game client was launched (for playtime)
+    FSessionProfile:  string;   // profile used by the running session
+    FSessionTimer:    TTimer;   // live session-time ticker
+    FCleanupOnExit:   Boolean;
+    FInRefreshProfiles: Boolean; // suppress session check during auto-select
+    FNewsLoaded: Boolean;        // feed loaded once, from FormShow (after form is themed/drawn)
+    FNews:       TArray<TNewsItem>;
+    FNewsFeed:   TNewsFeed;       // rendered into NewsScroll at runtime (TNewsFeed is not DFM-streamable)
+    FHeaderControl: THeaderPageControl; // custom PageControl swapped in at runtime (not DFM-streamable)
+    FHeaderTop: Integer;
+    procedure SetupHeaderPageControl;
+    procedure HeaderPageResize(Sender: TObject);
+    procedure RefreshProfiles;
+    procedure Log(const Msg: string);
+    procedure LogV(const Msg: string);
+    procedure LoadExternalStyles;
+    function  SelectedProfile: string;
+    function  GetProductId: Integer;
+    procedure UpdateButtons;
+    procedure AutoDetectGame;
+    procedure LoadConfig;
+    procedure SaveConfig;
+    procedure SaveRefreshedCookies(const Profile, Fresh: string);
+    function  TryRefreshCookies(const Profile: string; var Cookies: string;
+                const LogMsg: TProc<string>): Boolean;
+    procedure SetProfileIcon(const Profile: string; IconIndex: Integer);
+    procedure CheckSessionCached(const Profile, Cookies: string);
+    procedure StartupSessionCheck;
+    procedure LoadNews;
+    procedure PromptReLogin(const Profile: string; Fresh: Boolean = False);
+    procedure LaunchProfile(const Name: string);
+    procedure RefreshTrayMenu;
+    procedure TrayProfileClick(Sender: TObject);
+    procedure TrayShowClick(Sender: TObject);
+    procedure TrayIconDblClick(Sender: TObject);
+    procedure GameExitHandler(Sender: TObject);
+    function  SessionTextFor(const Profile: string): string;
+    procedure SessionTimerTick(Sender: TObject);
+    procedure WMSysCommand(var Msg: TMessage); message WM_SYSCOMMAND;
+    procedure MenuForceAllClick(Sender: TObject);
+    procedure DoCheckAndUpdate(AutoMode: Boolean; ForceAll: Boolean = False; VerifyMode: Boolean = False);
+    procedure MenuVerifyRepairClick(Sender: TObject);
+    procedure LvProfilesDblClick(Sender: TObject);
+    procedure DoRefreshSession(const Profile: string);
+    procedure SetAutoStart(Enable: Boolean);
+    procedure MigrateLegacyData;
+  end;
+
+var
+  FormMain: TFormMain;
+
+// Exposed for Rua.dpr — apply the saved theme before the main form is created.
+function ReadThemeFromConfig: string;
+
+implementation
+
+{$R *.dfm}
+{$R ..\..\tray_icon.res}
+
+uses
+  Vcl.FileCtrl, Vcl.Themes, Winapi.ShellAPI, System.Win.Registry,
+  frmLoginWebView, frmProfile, frmProfileEdit, frmSettings, frmFolderSelect, frmUpdateSelect,
+  uCookieUtil, uNxlPatcher, uCredStore, uLoginBrowser, uHooks;
+
+const
+  DEFAULT_PRODUCT = 10200; // Mabinogi
+
+{ Helpers }
+
+procedure TFormMain.MigrateLegacyData;
+const
+  OLD_APP  = 'NexonLauncher3P';
+  NEW_APP  = 'Rua';
+  OLD_CRED = OLD_APP + '\';
+var
+  OldDir, NewDir: string;
+  Profs:          TArray<TNexonProfile>;
+  Names:          TArray<string>;
+  I, Moved:       Integer;
+  procedure TryMoveFile(const OldName, NewName: string);
+  begin
+    if TFile.Exists(OldName) and not TFile.Exists(NewName) then
+    try
+      TDirectory.CreateDirectory(TPath.GetDirectoryName(NewName));
+      TFile.Move(OldName, NewName);
+    except end;
+  end;
+begin
+  OldDir := TPath.Combine(GetEnvironmentVariable('APPDATA'), OLD_APP);
+  NewDir := TPath.Combine(GetEnvironmentVariable('APPDATA'), NEW_APP);
+  if not TDirectory.Exists(OldDir) then Exit; // nothing to migrate
+
+  // Move flat files
+  TryMoveFile(TPath.Combine(OldDir, 'profiles.json'),
+              TPath.Combine(NewDir, 'profiles.json'));
+  TryMoveFile(TPath.Combine(OldDir, 'config.ini'),
+              TPath.Combine(NewDir, 'config.ini'));
+
+  // Migrate credentials: read profiles (may have just been moved), migrate each
+  Profs := LoadProfiles;
+  SetLength(Names, Length(Profs));
+  for I := 0 to High(Profs) do Names[I] := Profs[I].Name;
+  Moved := CredMigrateFrom(OLD_CRED, Names);
+  if Moved > 0 then
+    Log(Format('Migrated %d credential(s) from %s to %s.', [Moved, OLD_APP, NEW_APP]));
+end;
+
+procedure TFormMain.SetAutoStart(Enable: Boolean);
+var
+  RKey: HKEY;
+begin
+  if RegOpenKeyEx(HKEY_CURRENT_USER,
+    'SOFTWARE\Microsoft\Windows\CurrentVersion\Run', 0, KEY_SET_VALUE, RKey) = ERROR_SUCCESS then
+  begin
+    try
+      if Enable then
+        RegSetValueEx(RKey, 'Rua', 0, REG_SZ, PByte(ParamStr(0)), (Length(ParamStr(0)) + 1) * 2)
+      else
+        RegDeleteValue(RKey, 'Rua');
+    finally
+      RegCloseKey(RKey);
+    end;
+  end;
+end;
+
+function AppConfigPath: string;
+begin
+  Result := TPath.Combine(
+    GetEnvironmentVariable('APPDATA'),
+    'Nexon Launcher\appconfig.json');
+end;
+
+function FindGameExeFromNexonConfig(ProductId: Integer): string;
+var
+  CfgPath, Raw: string;
+  J, Apps, App: TJSONObject;
+begin
+  Result := '';
+  CfgPath := AppConfigPath;
+  if not TFile.Exists(CfgPath) then Exit;
+  Raw := TFile.ReadAllText(CfgPath, TEncoding.UTF8);
+  J := TJSONObject.ParseJSONValue(Raw) as TJSONObject;
+  if J = nil then Exit;
+  try
+    Apps := J.GetValue('installedApps') as TJSONObject;
+    if Apps = nil then Exit;
+    // Try exact product ID key
+    App := Apps.GetValue(IntToStr(ProductId)) as TJSONObject;
+    if App = nil then Exit;
+    var InstPath := App.GetValue<string>('installPath', '');
+    var ExePath  := App.GetValue<string>('exePath', '');
+    if (InstPath <> '') and (ExePath <> '') then
+      Result := TPath.Combine(InstPath, ExePath);
+  finally
+    J.Free;
+  end;
+  if (Result <> '') and not TFile.Exists(Result) then
+    Result := '';
+end;
+
+// Client.exe in an install folder: either directly or under appdata\.
+function GameExeInDir(const Dir: string): string;
+begin
+  Result := '';
+  if Dir = '' then Exit;
+  for var Sub in ['appdata\Client.exe', 'Client.exe'] do
+    if TFile.Exists(TPath.Combine(Dir, Sub)) then
+      Exit(TPath.Combine(Dir, Sub));
+end;
+
+// Uninstall entries (HKLM/HKCU, 64 and 32-bit views) whose DisplayName
+// mentions Mabinogi, via their InstallLocation.
+function FindGameExeFromUninstall: string;
+const
+  UNINST = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall';
+  VIEWS: array[0..1] of Cardinal = (KEY_WOW64_64KEY, KEY_WOW64_32KEY);
+var
+  Reg: TRegistry;
+  SubKeys: TStringList;
+begin
+  Result := '';
+  for var Root in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] do
+    for var View in VIEWS do
+    begin
+      Reg := TRegistry.Create(KEY_READ or View);
+      SubKeys := TStringList.Create;
+      try
+        Reg.RootKey := Root;
+        if not Reg.OpenKeyReadOnly(UNINST) then Continue;
+        Reg.GetKeyNames(SubKeys);
+        Reg.CloseKey;
+        for var K in SubKeys do
+          if Reg.OpenKeyReadOnly(UNINST + '\' + K) then
+          try
+            if Reg.ValueExists('DisplayName') and
+               (Pos('mabinogi', Reg.ReadString('DisplayName').ToLower) > 0) and
+               Reg.ValueExists('InstallLocation') then
+              Result := GameExeInDir(Reg.ReadString('InstallLocation'));
+          finally
+            Reg.CloseKey;
+          end;
+        if Result <> '' then Exit;
+      finally
+        SubKeys.Free;
+        Reg.Free;
+      end;
+    end;
+end;
+
+// Well-known install folders on every local drive. Under Wine also looks
+// inside other prefixes in the Linux home dir (Lutris, Steam/Proton, Bottles,
+// plain ~/.wine*), reached through Z:.
+function FindGameExeOnDisk: string;
+const
+  DIRS: array[0..6] of string = (
+    'Nexon\Library\mabinogi',
+    'Program Files\Nexon\Library\mabinogi',
+    'Program Files (x86)\Nexon\Library\mabinogi',
+    'Nexon\Mabinogi',
+    'Program Files\Nexon\Mabinogi',
+    'Program Files (x86)\Nexon\Mabinogi',
+    'Program Files (x86)\Mabinogi');
+var
+  Roots: TList<string>;
+
+  procedure AddPrefixes(const Parent, Mask, Inner: string);
+  begin
+    try
+      if TDirectory.Exists(Parent) then
+        for var D in TDirectory.GetDirectories(Parent, Mask) do
+          Roots.Add(TPath.Combine(TPath.Combine(D, Inner), 'drive_c'));
+    except
+      // unreadable dir: skip
+    end;
+  end;
+
+begin
+  Result := '';
+  Roots := TList<string>.Create;
+  try
+    // Local drives, skipping Z: (under Wine that is the whole Linux root).
+    var Mask := GetLogicalDrives;
+    for var I := 2 to 24 do // C..Y
+      if (Mask and (1 shl I)) <> 0 then
+      begin
+        var Drv := Char(Ord('A') + I) + ':\';
+        if GetDriveType(PChar(Drv)) = DRIVE_FIXED then
+          Roots.Add(Drv);
+      end;
+
+    if IsRunningUnderWine then
+    begin
+      var Home := GetEnvironmentVariable('HOME');
+      if Home.StartsWith('/') then
+      begin
+        Home := 'Z:' + Home.Replace('/', '\');
+        AddPrefixes(Home, '.wine*', '');
+        AddPrefixes(TPath.Combine(Home, 'Games'), '*', '');
+        AddPrefixes(TPath.Combine(Home, '.local\share\bottles\bottles'), '*', '');
+        AddPrefixes(TPath.Combine(Home, '.local\share\Steam\steamapps\compatdata'), '*', 'pfx');
+        AddPrefixes(TPath.Combine(Home, '.steam\steam\steamapps\compatdata'), '*', 'pfx');
+        AddPrefixes(TPath.Combine(Home,
+          '.var\app\com.valvesoftware.Steam\.local\share\Steam\steamapps\compatdata'), '*', 'pfx');
+      end;
+    end;
+
+    for var R in Roots do
+      for var D in DIRS do
+      begin
+        Result := GameExeInDir(TPath.Combine(R, D));
+        if Result <> '' then Exit;
+      end;
+  finally
+    Roots.Free;
+  end;
+end;
+
+function FindGameExe(ProductId: Integer): string;
+begin
+  Result := FindGameExeFromNexonConfig(ProductId);
+  if Result = '' then Result := FindGameExeFromUninstall;
+  if Result = '' then Result := FindGameExeOnDisk;
+end;
+
+{ TFormMain }
+
+function ConfigPath: string;
+begin
+  Result := TPath.Combine(GetEnvironmentVariable('APPDATA'),
+    'Rua\config.ini');
+end;
+
+function ReadThemeFromConfig: string;
+var
+  INI: TIniFile;
+begin
+  // Custom VCL styles render broken under Wine (invisible buttons etc.), so
+  // Wine always gets the system theme regardless of what is saved.
+  if IsRunningUnderWine then
+    Exit(WINE_THEME);
+  Result := '';
+  try
+    INI := TIniFile.Create(ConfigPath);
+    try
+      Result := INI.ReadString('UI', 'Theme', '');
+    finally
+      INI.Free;
+    end;
+  except
+    Result := '';
+  end;
+end;
+
+procedure TFormMain.LoadConfig;
+var
+  INI: TIniFile;
+begin
+  if not TFile.Exists(ConfigPath) then Exit;
+  INI := TIniFile.Create(ConfigPath);
+  try
+    var Path := INI.ReadString('Game', 'Path', '');
+    if Path <> '' then FDefaultGameExe := Path;
+    FProductId := INI.ReadInteger('Game', 'ProductId', DEFAULT_PRODUCT);
+    FAutoCheck      := INI.ReadBool('Update', 'AutoCheck',  False);
+    FAutoUpdate     := INI.ReadBool('Update', 'AutoUpdate', False);
+    FAutoStart      := INI.ReadBool('Startup', 'AutoStart', False);
+    FStartMinimized := INI.ReadBool('Startup', 'StartMinimized', False);
+    FTrayOnLaunch   := INI.ReadBool('Startup', 'TrayOnLaunch', False);
+    FRememberLastProfile := INI.ReadBool('Startup', 'RememberLastProfile', False);
+    FLastSelectedProfile := INI.ReadString('Startup', 'LastProfile', '');
+    FSortAlpha      := INI.ReadBool('UI', 'SortAlpha', False);
+    FVerbose := INI.ReadBool('UI', 'Verbose', False);
+    FTheme := INI.ReadString('UI', 'Theme', '');
+    if IsRunningUnderWine then TStyleManager.TrySetStyle(WINE_THEME)
+    else if FTheme <> '' then TStyleManager.TrySetStyle(FTheme);
+  finally
+    INI.Free;
+  end;
+end;
+
+procedure TFormMain.SaveConfig;
+var
+  INI: TIniFile;
+begin
+  TDirectory.CreateDirectory(ExtractFileDir(ConfigPath));
+  INI := TIniFile.Create(ConfigPath);
+  try
+    INI.WriteString('Game', 'Path',       FDefaultGameExe);
+    INI.WriteInteger('Game', 'ProductId', FProductId);
+    INI.WriteBool('Update', 'AutoCheck',  FAutoCheck);
+    INI.WriteBool('Update', 'AutoUpdate', FAutoUpdate);
+    INI.WriteBool('Startup', 'AutoStart',      FAutoStart);
+    INI.WriteBool('Startup', 'StartMinimized', FStartMinimized);
+    INI.WriteBool('Startup', 'TrayOnLaunch',   FTrayOnLaunch);
+    INI.WriteBool('Startup', 'RememberLastProfile', FRememberLastProfile);
+    INI.WriteString('Startup', 'LastProfile', FLastSelectedProfile);
+    INI.WriteBool('UI', 'SortAlpha', FSortAlpha);
+    INI.WriteBool('UI', 'Verbose',   FVerbose);
+    INI.WriteString('UI', 'Theme',  FTheme);
+  finally
+    INI.Free;
+  end;
+end;
+
+procedure TFormMain.LoadExternalStyles;
+var
+  StyleDir, F: string;
+begin
+  StyleDir := ExtractFilePath(ParamStr(0)) + 'styles';
+  if TDirectory.Exists(StyleDir) then
+    for F in TDirectory.GetFiles(StyleDir, '*.vsf') do
+    try
+      TStyleManager.LoadFromFile(F);
+    except
+    end;
+end;
+
+procedure TFormMain.FormCreate(Sender: TObject);
+var
+  SC: TListColumn;
+  EarlyTheme: string;
+begin
+  // Apply the saved Vcl theme FIRST so no control ever paints with the default
+  // (unthemed/white) style — DFM controls are created before FormCreate, and
+  // they lazily paint on Show, so setting the style here themes them correctly.
+  EarlyTheme := ReadThemeFromConfig;
+  if EarlyTheme <> '' then
+    TStyleManager.TrySetStyle(EarlyTheme);
+
+  // THeaderPageControl is created at runtime (it is not registered as a
+  // design-time component), so swap it in before anything touches PageControl1.
+  SetupHeaderPageControl;
+
+  // The swapped-in page control is added to PnlRight after Rua, which would
+  // otherwise paint over it. Keep Rua on top so it stays visible peeking
+  // above the tab strip.
+  Rua.BringToFront;
+
+  // TNewsFeed is a runtime component (not registered for the design-time IDE),
+  // so it's created here and fills the DFM NewsScroll box. Uses the latter's
+  // bounds — resize/drag NewsScroll in the designer to position the feed.
+  FNewsFeed           := TNewsFeed.Create(Self);
+  FNewsFeed.Parent    := NewsScroll;
+  FNewsFeed.Align     := alClient;
+  FNewsFeed.DoubleBuffered := True;
+
+  FLauncher      := TGameLauncher.Create;
+  FSessionCache  := TDictionary<string, TSessionInfo>.Create;
+  FProductId     := DEFAULT_PRODUCT;
+  FPauseEvent    := TEvent.Create(nil, True, True, ''); // manual-reset, initially signaled (not paused)
+  Self.OnCloseQuery := FormCloseQuery;
+
+  MigrateLegacyData;
+
+  FLauncher.OnGameExit := GameExitHandler;
+
+  // Live session-time ticker: updates the "Session" column each second while a
+  // game is running (stops when the client exits / no active session).
+  FSessionTimer            := TTimer.Create(Self);
+  FSessionTimer.Interval   := 1000;
+  FSessionTimer.Enabled    := False;
+  FSessionTimer.OnTimer    := SessionTimerTick;
+
+  // Rebuild columns: status icon | Profile | UserNo | Last Used | Session
+  LvProfiles.SmallImages := ImageList1;
+  LvProfiles.Columns.Clear;
+  SC := LvProfiles.Columns.Add; SC.Caption := '';          SC.Width := 24;
+  SC := LvProfiles.Columns.Add; SC.Caption := 'Profile';   SC.Width := 100;
+  SC := LvProfiles.Columns.Add; SC.Caption := 'User No';   SC.Width := 0;
+  SC := LvProfiles.Columns.Add; SC.Caption := 'Last Used'; SC.Width := 68;
+  SC := LvProfiles.Columns.Add; SC.Caption := 'Session';   SC.Width := 62;
+
+  // Tray icon + menu
+  var MI: TMenuItem;
+  FTrayMenu := TPopupMenu.Create(Self);
+  MI := TMenuItem.Create(FTrayMenu); MI.Caption := 'Open';           MI.OnClick := TrayShowClick;   FTrayMenu.Items.Add(MI);
+  MI := TMenuItem.Create(FTrayMenu); MI.Caption := '-';                                              FTrayMenu.Items.Add(MI);
+  FTrayProfilesSub := TMenuItem.Create(FTrayMenu); FTrayProfilesSub.Caption := 'Launch Profile'; FTrayMenu.Items.Add(FTrayProfilesSub);
+  MI := TMenuItem.Create(FTrayMenu); MI.Caption := '-';                                              FTrayMenu.Items.Add(MI);
+  MI := TMenuItem.Create(FTrayMenu); MI.Caption := 'Exit';           MI.OnClick := MenuExitClick;   FTrayMenu.Items.Add(MI);
+
+  FTrayIcon            := TTrayIcon.Create(Self);
+  var HTray := LoadIcon(HInstance, 'TRAYICON');
+  if HTray <> 0 then
+    FTrayIcon.Icon.Handle := HTray
+  else
+    FTrayIcon.Icon := Application.Icon;
+  FTrayIcon.Hint       := 'Rua';
+  FTrayIcon.PopupMenu  := FTrayMenu;
+  FTrayIcon.OnDblClick := TrayIconDblClick;
+  FTrayIcon.Visible    := True;
+
+  // Profile list: dbl-click = edit; right-click adds "Refresh Login"
+  LvProfiles.OnDblClick := LvProfilesDblClick;
+  var PopSep := TMenuItem.Create(PopupProfile);
+  PopSep.Caption := '-';
+  PopupProfile.Items.Add(PopSep);
+  // Popup has static "Refresh Login" item (UpdateLogin) — no need for dynamic one.
+
+  // Update button dropdown menu
+  var MIVerify: TMenuItem;
+  FUpdateMenu          := TPopupMenu.Create(Self);
+  MIVerify             := TMenuItem.Create(FUpdateMenu);
+  MIVerify.Caption     := 'Verify / Repair Files';
+  MIVerify.OnClick     := MenuVerifyRepairClick;
+  FUpdateMenu.Items.Add(MIVerify);
+  var MIForce: TMenuItem := TMenuItem.Create(FUpdateMenu);
+  MIForce.Caption      := 'Re-download All Files';
+  MIForce.OnClick      := MenuForceAllClick;
+  FUpdateMenu.Items.Add(MIForce);
+
+  // Native split-button arrow: VCL renders the dropdown arrow and manages
+  // outside-click dismissal.
+  BtnCheckUpdate.DropDownMenu := FUpdateMenu;
+
+  LoadExternalStyles;
+  //Image1.Visible := False;        // news feed (NewsScroll) replaces the hero art
+  RefreshProfiles;   // calls RefreshTrayMenu too
+  StartupSessionCheck;
+  LoadConfig;        // applies the saved Vcl theme
+  if Trim(FDefaultGameExe) = '' then
+    AutoDetectGame;
+  SetAutoStart(FAutoStart);
+  if FAutoCheck then
+    DoCheckAndUpdate(True);
+  // LoadNews is deferred to FormShow — the feed needs the form drawn + themed
+  // before it samples the panel background (avoids a white/unthemed flash).
+  if FStartMinimized then
+  begin
+    Hide;
+    WindowState := wsMinimized;
+  end;
+  LblProgress.Caption := 'Ready...';
+  UpdateButtons;
+end;
+
+procedure TFormMain.SetupHeaderPageControl;
+var
+  OldPC: TPageControl;
+  NewPC: THeaderPageControl;
+  ActiveIdx: Integer;
+begin
+  OldPC := PageControl1;
+  if OldPC is THeaderPageControl then
+  begin
+    FHeaderControl := THeaderPageControl(OldPC);
+    Exit;
+  end;
+
+  ActiveIdx := OldPC.ActivePageIndex;
+  NewPC := THeaderPageControl.Create(PnlRight);
+  NewPC.Parent := PnlRight;
+  NewPC.Align := alNone;
+  NewPC.SetBounds(OldPC.Left, OldPC.Top, OldPC.Width, OldPC.Height);
+  NewPC.TabOrder := OldPC.TabOrder;
+  NewPC.Font := OldPC.Font;
+  NewPC.ParentFont := OldPC.ParentFont;
+  NewPC.DoubleBuffered := True;
+
+  // Adopt the tab sheets (TabSheet1/2 and their children) in order.
+  while OldPC.PageCount > 0 do
+    OldPC.Pages[0].PageControl := NewPC;
+
+  if ActiveIdx >= 0 then
+    NewPC.ActivePageIndex := ActiveIdx;
+
+  // Detach and free the stock control; our field now points at the header one.
+  OldPC.Parent := nil;
+  OldPC.Free;
+  PageControl1   := NewPC;
+  FHeaderControl := NewPC;
+  NewPC.Overlay  := Rua; // repaint the logo on top under the system theme
+
+  // Header configuration. HeaderHeight grows the tab-strip band without growing
+  // the tab captions. Set a picture on HeaderImage to draw an aligned background
+  // image behind the tabs (see uHeaderPageControl).
+  NewPC.HeaderHeight := 40;
+
+  // The buttons (Panel1, alBottom) re-dock to the bottom edge on resize, so keep
+  // the header control filling the page area above it. (We use alNone + explicit
+  // bounds because a swapped-in alBottom sibling's dock slot is not predictable.)
+  FHeaderTop   := OldPC.Top;
+  PnlRight.OnResize := HeaderPageResize;
+  HeaderPageResize(PnlRight);
+end;
+
+procedure TFormMain.HeaderPageResize(Sender: TObject);
+begin
+  if FHeaderControl = nil then
+    Exit;
+  FHeaderControl.Left   := PnlRight.Padding.Left;
+  FHeaderControl.Top    := FHeaderTop;
+  FHeaderControl.Width  := PnlRight.ClientWidth - PnlRight.Padding.Left - PnlRight.Padding.Right;
+  FHeaderControl.Height := Panel1.Top - FHeaderControl.Top;
+  Rua.BringToFront;
+end;
+
+procedure TFormMain.FormShow(Sender: TObject);
+begin
+  // Load the news feed the first time the form is shown — by now the form is
+  // drawn and the active VclStyle is applied, so the feed samples the real
+  // themed background instead of flashing white/unthemed during construction.
+  if not FNewsLoaded then
+  begin
+    FNewsLoaded := True;
+    LoadNews;
+  end;
+end;
+
+procedure TFormMain.FormDestroy(Sender: TObject);
+begin
+  FLauncher.Free;
+  FSessionCache.Free;
+  FPauseEvent.Free;
+  // NewsScroll (TNewsFeed) owns its cards; Image1 + NewsScroll freed by Self.
+  // FTrayIcon + FTrayMenu owned by Self — freed automatically
+end;
+
+procedure TFormMain.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
+begin
+  if FDownloadActive then
+  begin
+    if not FCleanupOnExit then
+    begin
+      if MessageDlg('Download in progress. Cancel and exit?',
+           mtConfirmation, [mbYes, mbNo], 0) <> mrYes then
+      begin
+        CanClose := False;
+        Exit;
+      end;
+    end;
+    FCancelDownload := True;
+    FPauseEvent.SetEvent; // unblock if paused
+    FCleanupOnExit := True;
+    CanClose := False; // thread will call Close() when it finishes
+  end;
+end;
+
+procedure TFormMain.FormClose(Sender: TObject; var Action: TCloseAction);
+begin
+  SaveConfig;
+  if FLauncher.IsRunning then
+  begin
+    Action := caNone;
+    Hide; // game still running — stay in tray
+  end;
+end;
+
+procedure TFormMain.WMSysCommand(var Msg: TMessage);
+begin
+  if (Msg.WParam and $FFF0) = SC_MINIMIZE then
+  begin
+    Hide;
+    Msg.Result := 0;
+  end
+  else
+    inherited;
+end;
+
+procedure TFormMain.AutoDetectGame;
+var
+  Path: string;
+begin
+  Path := FindGameExe(DEFAULT_PRODUCT);
+  if Path <> '' then
+  begin
+    FDefaultGameExe := Path;
+    Log('Game found: ' + Path);
+    SaveConfig;
+  end;
+end;
+
+procedure TFormMain.RefreshProfiles;
+var
+  Profiles: TArray<TNexonProfile>;
+  Item:     TListItem;
+  Tmp:      TNexonProfile;
+begin
+  Profiles := LoadProfiles;
+
+  // Sort by preference: alpha ascending or last-used descending
+  var A, B: Integer;
+  for A := 0 to High(Profiles) - 1 do
+    for B := A + 1 to High(Profiles) do
+      if (FSortAlpha and (CompareText(Profiles[B].Name, Profiles[A].Name) < 0))
+         or (not FSortAlpha and (Profiles[B].LastUsed > Profiles[A].LastUsed)) then
+      begin
+        Tmp := Profiles[A]; Profiles[A] := Profiles[B]; Profiles[B] := Tmp;
+      end;
+
+  LvProfiles.Items.BeginUpdate;
+  try
+    LvProfiles.Items.Clear;
+    for var P in Profiles do
+    begin
+      Item             := LvProfiles.Items.Add;
+      Item.Caption     := '';    // col 0: status icon only
+      Item.ImageIndex  := 0;    // blue = not yet checked
+      Item.SubItems.Add(P.Name);   // col 1: Profile
+      Item.SubItems.Add(P.UserNo); // col 2: UserNo (hidden)
+      if P.LastUsed > 0 then
+        Item.SubItems.Add(DateTimeToStr(P.LastUsed))
+      else
+        Item.SubItems.Add('Never'); // col 3: Last Used
+      // col 4: Session time (live; updated by the session timer)
+      Item.SubItems.Add(SessionTextFor(P.Name));
+    end;
+  finally
+    LvProfiles.Items.EndUpdate;
+  end;
+  LvProfiles.Columns[0].Width := 24; // Status: fixed narrow
+  LvProfiles.Columns[1].Width := -2; // Profile: LVSCW_AUTOSIZE_USEHEADER
+  LvProfiles.Columns[2].Width := 0;  // UserNo — hidden, kept in data
+  LvProfiles.Columns[3].Width := -2; // Last Used: LVSCW_AUTOSIZE_USEHEADER
+  LvProfiles.Columns[4].Width := 62; // Session
+
+  // Auto-select last used profile (or top item) silently
+  FInRefreshProfiles := True;
+  try
+    if LvProfiles.Items.Count > 0 then
+    begin
+      var SelIdx := 0;
+      if FRememberLastProfile and (FLastSelectedProfile <> '') then
+        for var PIdx := 0 to LvProfiles.Items.Count - 1 do
+          if LvProfiles.Items[PIdx].SubItems[0] = FLastSelectedProfile then
+          begin SelIdx := PIdx; Break; end;
+      LvProfiles.Items[SelIdx].Selected := True;
+    end;
+  finally
+    FInRefreshProfiles := False;
+  end;
+
+  UpdateButtons;
+  if Assigned(FTrayMenu) then RefreshTrayMenu;
+end;
+
+procedure TFormMain.Log(const Msg: string);
+begin
+  MemoLog.Lines.Add(FormatDateTime('[hh:nn:ss] ', Now) + Msg);
+  StatusBar.SimpleText := Msg;
+end;
+
+procedure TFormMain.LogV(const Msg: string);
+begin
+  if FVerbose then Log(Msg);
+end;
+
+function TFormMain.SelectedProfile: string;
+begin
+  Result := '';
+  if (LvProfiles.Selected <> nil) and
+     (LvProfiles.Selected.SubItems.Count > 0) then
+    Result := LvProfiles.Selected.SubItems[0]; // col 1 = Profile (col 0 = status icon)
+end;
+
+function TFormMain.GetProductId: Integer;
+begin
+  Result := FProductId;
+end;
+
+procedure TFormMain.UpdateButtons;
+var
+  HasProfile, HasPath: Boolean;
+begin
+  HasProfile := SelectedProfile <> '';
+  HasPath    := Trim(FDefaultGameExe) <> '';
+  BtnLaunch.Enabled             := HasProfile and HasPath;
+  MenuRefreshToken.Enabled      := HasProfile;
+  MenuEditProfile.Enabled       := HasProfile;
+  MenuDeleteProfile.Enabled := HasProfile;
+  BtnEditProfile.Enabled    := HasProfile;
+  BtnRemoveProfile.Enabled  := HasProfile;
+  PopEdit.Enabled           := HasProfile;
+  PopDelete.Enabled         := HasProfile;
+end;
+
+{procedure TFormMain.UpdateLogin1Click(Sender: TObject);
+begin
+
+end;
+
+ Menu / buttons }
+
+procedure TFormMain.MenuAddProfileClick(Sender: TObject);
+var
+  Cookies, Name: string;
+  P:             TNexonProfile;
+begin
+  if not TFormProfile.Execute(Name) then
+  begin
+    Log('Profile creation cancelled.');
+    Exit;
+  end;
+
+  Log('Opening WebView2 login for "' + Name + '"...');
+  if not TFormLoginWebView.Execute(Cookies, Name, False) then
+  begin
+    Log('Login cancelled.');
+    Exit;
+  end;
+  Log('Cookies captured.');
+
+  P.Name     := Name;
+  P.UserNo   := ExtractCookieValue(Cookies, 'NexonUserID');
+  P.DeviceId := GetDeviceId(Name);
+  P.Products := [GetProductId];
+  P.LastUsed := 0;
+
+  AddOrUpdateProfile(P, Cookies);
+  Log('Profile saved: ' + Name);
+  // Debug: show which session keys were captured
+  begin
+    var Keys := '';
+    for var K in ['NxLSession','AToken','g_AToken','NxGUN','NexonUserID','id_token'] do
+      if ExtractCookieValue(Cookies, K) <> '' then
+        Keys := Keys + K + ' ';
+    Log('Captured keys: [' + Trim(Keys) + ']');
+  end;
+  RefreshProfiles;
+
+  // First profile on a fresh install (typical under Wine): find the game now
+  // instead of failing later at launch.
+  if Trim(FDefaultGameExe) = '' then
+  begin
+    AutoDetectGame;
+    if Trim(FDefaultGameExe) = '' then
+    begin
+      Log('Game not found automatically.');
+      if MessageDlg('Mabinogi''s Client.exe was not found automatically.' + sLineBreak +
+         'Open Settings to set the game path now?', mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+        MenuSettingsClick(Self);
+    end;
+  end;
+end;
+
+procedure TFormMain.MenuEditProfileClick(Sender: TObject);
+var
+  OldName:     string;
+  P:           TNexonProfile;
+  Profiles:    TArray<TNexonProfile>;
+  I:           Integer;
+  Found:       Boolean;
+  NewCookies:  string;
+  Refreshed:   Boolean;
+  OldCookies:  string;
+begin
+  OldName := SelectedProfile;
+  if OldName = '' then Exit;
+
+  Profiles := LoadProfiles;
+  Found    := False;
+  for I := 0 to High(Profiles) do
+    if Profiles[I].Name = OldName then
+    begin
+      P     := Profiles[I];
+      Found := True;
+      Break;
+    end;
+  if not Found then Exit;
+
+  var SessStatus := 'Unknown';
+  var SessInfo: TSessionInfo;
+  if FSessionCache.TryGetValue(OldName, SessInfo) and SessInfo.Valid then
+    SessStatus := 'Valid';
+  if not TFormProfileEdit.Execute(P, NewCookies, Refreshed, SessStatus) then Exit;
+
+  if P.Name <> OldName then
+  begin
+    // Rename: move credential to new key
+    OldCookies := LoadCookies(OldName);
+    DeleteProfile(OldName);
+    AddOrUpdateProfile(P, OldCookies);
+    Log('Profile renamed: ' + OldName + ' → ' + P.Name);
+  end
+  else
+  begin
+    // Update GameExe (and any other fields) in place
+    for I := 0 to High(Profiles) do
+      if Profiles[I].Name = OldName then begin Profiles[I] := P; Break; end;
+    SaveProfiles(Profiles);
+  end;
+
+  if Refreshed and (NewCookies <> '') then
+  begin
+    AddOrUpdateProfile(P, NewCookies);
+    Log('Cookies refreshed for: ' + P.Name);
+  end;
+
+  RefreshProfiles;
+  // Restore session icons — RefreshProfiles resets all to blue (unknown).
+  for var K in FSessionCache.Keys do
+  begin
+    var CI: TSessionInfo;
+    if FSessionCache.TryGetValue(K, CI) then
+      SetProfileIcon(K, IfThen(CI.Valid, 1, 2));
+  end;
+end;
+
+procedure TFormMain.MenuDeleteProfileClick(Sender: TObject);
+var
+  Name: string;
+begin
+  Name := SelectedProfile;
+  if Name = '' then Exit;
+  if MessageDlg('Delete profile "' + Name + '"?',
+    mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+  begin
+    DeleteProfile(Name);
+    Log('Profile deleted: ' + Name);
+    RefreshProfiles;
+  end;
+end;
+
+// Unified session refresh: try token refresh first, fall back to WebView2 login.
+procedure TFormMain.DoRefreshSession(const Profile: string);
+var
+  Cookies: string;
+  Keys: string;
+begin
+  if Profile = '' then
+  begin
+    Log('No profile selected.');
+    Exit;
+  end;
+
+  Cookies := LoadCookies(Profile);
+  if Cookies = '' then
+  begin
+    Log('No saved session — opening WebView2 login...');
+    PromptReLogin(Profile);
+    Exit;
+  end;
+
+  for var K in ['NxLSession','AToken','NxGUN','g_AToken','NexonUserID'] do
+    if ExtractCookieValue(Cookies, K) <> '' then Keys := Keys + K + ' ';
+  Log('Stored cookie keys: [' + Trim(Keys) + ']');
+  Log('Refreshing session for: ' + Profile);
+
+  TThread.CreateAnonymousThread(procedure
+  var
+    C:     string;
+    Prof:  string;
+  begin
+    C    := Cookies;
+    Prof := Profile;
+    var LogFn: TProc<string> := procedure(Msg: string)
+      begin TThread.Queue(nil, procedure begin Log(Msg); end); end;
+    if TryRefreshCookies(Prof, C, LogFn) then
+    begin
+      FSessionCache.Remove(Prof);
+      // Session still valid — offer a fresh login anyway (e.g. to switch account
+      // or to walk through Nexon's device verification again).
+      TThread.Synchronize(nil, procedure
+      begin
+        Log('Session valid.');
+        if MessageDlg('Session for "' + Prof + '" is still valid.' + sLineBreak + sLineBreak +
+             'Log in again anyway?', mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+          PromptReLogin(Prof, True);
+      end);
+    end
+    else
+      TThread.Synchronize(nil, procedure begin PromptReLogin(Prof); end);
+  end).Start;
+end;
+
+procedure TFormMain.MenuRefreshTokenClick(Sender: TObject);
+begin
+  DoRefreshSession(SelectedProfile);
+end;
+
+procedure TFormMain.UpdateLoginClick(Sender: TObject);
+begin
+  DoRefreshSession(SelectedProfile);
+end;
+
+procedure TFormMain.MenuSettingsClick(Sender: TObject);
+var
+  GameExe, Theme: string;
+  Verbose, AutoCheck, AutoUpdate, AutoStart, StartMinimized, TrayOnLaunch: Boolean;
+begin
+  GameExe   := FDefaultGameExe;
+  Theme     := TStyleManager.ActiveStyle.Name;
+  Verbose   := FVerbose;
+  AutoCheck := FAutoCheck;
+  AutoUpdate := FAutoUpdate;
+  AutoStart  := FAutoStart;
+  StartMinimized := FStartMinimized;
+  TrayOnLaunch   := FTrayOnLaunch;
+  if TFormSettings.Execute(GameExe, Theme, Verbose, AutoCheck, AutoUpdate,
+     AutoStart, StartMinimized, TrayOnLaunch, FRememberLastProfile, FSortAlpha) then
+  begin
+    FDefaultGameExe := GameExe;
+    FVerbose        := Verbose;
+    FAutoCheck      := AutoCheck;
+    FAutoUpdate     := AutoUpdate;
+    FAutoStart      := AutoStart;
+    FStartMinimized := StartMinimized;
+    FTrayOnLaunch   := TrayOnLaunch;
+    if Theme <> '' then begin FTheme := Theme; TStyleManager.TrySetStyle(FTheme); end;
+    SetAutoStart(FAutoStart);
+    SaveConfig;
+    RefreshProfiles;
+    // Restore session icons — RefreshProfiles resets all to blue.
+    for var K in FSessionCache.Keys do
+    begin
+      var CI: TSessionInfo;
+      if FSessionCache.TryGetValue(K, CI) then
+        SetProfileIcon(K, IfThen(CI.Valid, 1, 2));
+    end;
+    UpdateButtons;
+  end;
+end;
+
+procedure TFormMain.MenuExitClick(Sender: TObject);
+begin
+  Close;
+end;
+
+procedure TFormMain.BtnAddProfileClick(Sender: TObject);
+begin
+  MenuAddProfileClick(Sender);
+end;
+
+procedure TFormMain.BtnEditProfileClick(Sender: TObject);
+begin
+  MenuEditProfileClick(Sender);
+end;
+
+procedure TFormMain.BtnRemoveProfileClick(Sender: TObject);
+begin
+  MenuDeleteProfileClick(Sender);
+end;
+
+procedure TFormMain.BtnLaunchClick(Sender: TObject);
+begin
+  LaunchProfile(SelectedProfile);
+end;
+
+procedure TFormMain.BtnCheckUpdateClick(Sender: TObject);
+begin
+  // Single button: caption="Pause"/"Resume" → toggle download; else run update.
+  if (BtnCheckUpdate.Caption = 'Pause') or (BtnCheckUpdate.Caption = 'Resume') then
+    ToggleUpdatePause
+  else
+    DoCheckAndUpdate(False);
+end;
+
+procedure TFormMain.MenuVerifyRepairClick(Sender: TObject);
+begin
+  DoCheckAndUpdate(False, False, True);
+end;
+
+procedure TFormMain.MenuForceAllClick(Sender: TObject);
+begin
+  if MessageDlg('Re-download every game file? This can take a long time.',
+       mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+    DoCheckAndUpdate(False, True);
+end;
+
+procedure TFormMain.LvProfilesDblClick(Sender: TObject);
+begin
+  if SelectedProfile <> '' then
+    MenuEditProfileClick(Sender);
+end;
+
+
+
+procedure TFormMain.ToggleUpdatePause;
+const
+  PAUSE_TAG = '[PAUSED] ';
+var
+  Sep: Integer;
+  Cap: string;
+begin
+  if BtnCheckUpdate.Caption = 'Pause' then
+  begin
+    FPauseEvent.ResetEvent;
+    BtnCheckUpdate.Caption := 'Resume';
+    Cap := LblProgress.Caption;
+    Sep := Pos(#13#10, Cap);
+    if Sep > 0 then
+      LblProgress.Caption := PAUSE_TAG + Copy(Cap, 1, Sep - 1)
+                           + #13#10 + Copy(Cap, Sep + 2, MaxInt)
+    else
+      LblProgress.Caption := PAUSE_TAG + Cap;
+  end
+  else
+  begin
+    FPauseEvent.SetEvent;
+    BtnCheckUpdate.Caption := 'Pause';
+    Cap := LblProgress.Caption;
+    if Copy(Cap, 1, Length(PAUSE_TAG)) = PAUSE_TAG then
+      LblProgress.Caption := Copy(Cap, Length(PAUSE_TAG) + 1, MaxInt);
+  end;
+end;
+
+procedure TFormMain.SaveRefreshedCookies(const Profile, Fresh: string);
+var
+  Profs:  TArray<TNexonProfile>;
+  Merged: string;
+begin
+  // Preserve NxLSession from old credential — some refresh sources (browser fallback)
+  // may not return it. Losing it makes silent autologin impossible.
+  Merged := Fresh;
+  if ExtractCookieValue(Merged, 'NxLSession') = '' then
+  begin
+    var Old := LoadCookies(Profile);
+    var OldNxL := ExtractCookieValue(Old, 'NxLSession');
+    if OldNxL <> '' then Merged := Merged + '; NxLSession=' + OldNxL;
+  end;
+
+  Profs := LoadProfiles;
+  for var I := 0 to High(Profs) do
+    if Profs[I].Name = Profile then
+    begin
+      AddOrUpdateProfile(Profs[I], Merged);
+      Break;
+    end;
+end;
+
+function NexonCodeToStr(Code: Integer): string;
+begin
+  case Code of
+    0:         Result := '';
+    10001:     Result := 'session not found';
+    20027:     Result := 'device not trusted';
+    20182:     Result := 'autologin not available for this account';
+    1013,70018,70019: Result := 'CAPTCHA required';
+    20048:     Result := 'invalid captcha token';
+  else
+    Result := 'code ' + IntToStr(Code);
+  end;
+end;
+
+function TFormMain.TryRefreshCookies(const Profile: string; var Cookies: string;
+  const LogMsg: TProc<string>): Boolean;
+var
+  Status, NexonCode:  Integer;
+  NxLSess, DevId:     string;
+  Refreshed:          string;
+  AllProfs:           TArray<TNexonProfile>;
+begin
+  Result := False;
+
+  // 1. Check if session (NxLSession + AToken) still valid — fast exit if nothing expired.
+  if CheckSessionValid(Cookies, Status, NexonCode) then
+  begin
+    LogMsg('Session still valid.');
+    Exit(True);
+  end;
+  var Reason := NexonCodeToStr(NexonCode);
+  if Reason <> '' then Reason := ' (' + Reason + ')';
+  LogMsg(Format('Session expired (HTTP %d%s) — trying refresh.', [Status, Reason]));
+
+  // 2. Autologin refresh (email/password accounts; TPA returns error 20182 → skip to step 3).
+  NxLSess := ExtractCookieValue(Cookies, 'NxLSession');
+  DevId   := '';
+  AllProfs := LoadProfiles;
+  for var P in AllProfs do
+    if P.Name = Profile then begin DevId := P.DeviceId; Break; end;
+
+  if (NxLSess <> '') and (DevId <> '') then
+  begin
+    LogMsg('Trying autologin refresh...');
+    Status    := 0;
+    Refreshed := AutoLoginRefresh(NxLSess, DevId, Status);
+    if Refreshed <> '' then
+    begin
+      SaveRefreshedCookies(Profile, Refreshed);
+      Cookies := Refreshed;
+      LogMsg('AToken refreshed via autologin.');
+      Exit(True);
+    end;
+    LogMsg(Format('Autologin failed (HTTP %d).', [Status]));
+  end;
+
+end;
+
+procedure TFormMain.DoCheckAndUpdate(AutoMode: Boolean; ForceAll: Boolean = False; VerifyMode: Boolean = False);
+var
+  Cookies, Profile: string;
+  ProductId:        Integer;
+  InstRoots:        TArray<string>;
+begin
+  if FDownloadActive then Exit;
+
+  Profile   := SelectedProfile;
+  Cookies   := LoadCookies(Profile);
+  ProductId := GetProductId;
+
+  // Collect unique install roots (case-insensitive dedup via lowercase key dict).
+  var SeenKeys := TDictionary<string, Boolean>.Create;
+  try
+    var AddRoot: TProc<string> := procedure(Exe: string)
+    begin
+      Exe := Trim(Exe);
+      if Exe = '' then Exit;
+      var Dir := TPath.GetDirectoryName(Exe);
+      if Dir = '' then Exit;
+      var Key := Dir.ToLower;
+      if not SeenKeys.ContainsKey(Key) then
+      begin
+        SeenKeys.Add(Key, True);
+        InstRoots := InstRoots + [Dir];
+      end;
+    end;
+    var DefaultExe := Trim(FDefaultGameExe);
+    if DefaultExe = '' then DefaultExe := FindGameExe(GetProductId);
+    if DefaultExe <> '' then
+      AddRoot(DefaultExe);
+    for var Prof in LoadProfiles do
+      if Trim(Prof.GameExe) <> '' then
+        AddRoot(Prof.GameExe)
+      else if DefaultExe <> '' then
+        AddRoot(DefaultExe);
+  finally
+    SeenKeys.Free;
+  end;
+
+  // Update check uses /game-build/v1/branch/games/<id>/public — no auth required.
+  // Proceed even without a profile; download is also unauthenticated CDN.
+
+  FCancelDownload := False;
+  FDownloadActive := True;
+  FUpdateAvailable := False;
+  FPauseEvent.SetEvent; // ensure not paused from a previous run
+  // Keep the update button ENABLED so Pause/Resume is clickable throughout
+  // (scan + download). Launch is disabled during the operation.
+  BtnCheckUpdate.Enabled := True;
+  BtnLaunch.Enabled      := False;
+  // Pause is available throughout (scan + download) — clicking toggles pause/resume.
+  BtnCheckUpdate.Caption := 'Pause';
+  LblProgress.Caption    := 'Checking...';
+  PrgUpdate.Max          := Max(1, Length(InstRoots));
+  PrgUpdate.Position     := 0;
+  if Length(InstRoots) = 0 then
+  begin
+    Log('No game folder configured — set a path in Settings.');
+    FDownloadActive := False;
+    BtnCheckUpdate.Enabled := True;
+    BtnLaunch.Enabled      := SelectedProfile <> '';
+    LblProgress.Caption    := 'Ready...';
+    Exit;
+  end;
+  Log('Checking for updates...');
+
+  var ShouldAutoUpdate := FAutoUpdate;
+  var StartTime        := Now;
+  var CapHooks         := LoadHooks;
+  var CapBeforePatch   := CapHooks.BeforePatch;
+  var CapAfterPatch    := CapHooks.AfterPatch;
+  var CapProfile       := SelectedProfile;
+
+  TThread.CreateAnonymousThread(procedure
+  var
+    RemoteHash, LocalHash, HashFile, InstRoot, Error: string;
+    SkipFinalCleanup: Boolean;
+    CheckIdx: Integer;
+    UpdateRoots:      TArray<string>;
+    OutdatedRoots:    TArray<string>;
+    HookFired:        Boolean;
+  begin
+    Error            := '';
+    SkipFinalCleanup := False;
+    HookFired        := False;
+    CheckIdx         := 0;
+    UpdateRoots      := [];
+    OutdatedRoots    := [];
+    try
+      try
+        RemoteHash := FetchManifestHash(Cookies, ProductId);
+      except
+        on E: EUpdateCheckError do
+        begin
+          // Public endpoint shouldn't 401, but handle gracefully if it does
+          if (Pos('401', E.Message) = 0) or (Profile = '') then raise;
+          TThread.Queue(nil, procedure begin Log('Session expired — refreshing...'); end);
+          var LogFn: TProc<string> := procedure(Msg: string)
+            begin TThread.Queue(nil, procedure begin Log(Msg); end); end;
+          if not TryRefreshCookies(Profile, Cookies, LogFn) then
+          begin
+            TThread.Queue(nil, procedure begin Log('Could not refresh session — prompting re-login...'); end);
+            var ReLoginOK := False;
+            TThread.Synchronize(nil, procedure
+            var
+              ReLoginStatus: Integer;
+            begin
+              PromptReLogin(Profile);
+              ReLoginOK := CheckSessionValid(LoadCookies(Profile), ReLoginStatus);
+            end);
+            if not ReLoginOK then
+            begin
+              TThread.Queue(nil, procedure begin Log('Re-login required — update cancelled.'); end);
+              raise;
+            end;
+            Cookies := LoadCookies(Profile);
+          end;
+          RemoteHash := FetchManifestHash(Cookies, ProductId);
+        end;
+      end;
+      TThread.Queue(nil, procedure begin LogV('Remote hash: ' + RemoteHash); end);
+
+      // Phase 1: determine which roots need updating.
+      // IIAP per iteration: R/I are value params → unique copy per call, no aliasing.
+      for InstRoot in InstRoots do
+      begin
+        Inc(CheckIdx);
+        (procedure(const R: string; I: Integer)
+        begin
+          TThread.Queue(nil, procedure begin
+            LblProgress.Caption := 'Checking: ' + R;
+            PrgUpdate.Position  := I - 1;
+          end);
+
+          LocalHash := '';
+          HashFile  := TPath.Combine(R,
+            'patchdata\' + IntToStr(ProductId) + '.manifest.hash');
+          if TFile.Exists(HashFile) then
+            LocalHash := Trim(TFile.ReadAllText(HashFile));
+          if LocalHash <> RemoteHash then
+            OutdatedRoots := OutdatedRoots + [R];
+          if VerifyMode or ForceAll or (LocalHash <> RemoteHash) then
+            UpdateRoots := UpdateRoots + [R]
+          else
+            TThread.Queue(nil, procedure begin Log(R + ': up to date.'); end);
+
+          TThread.Queue(nil, procedure begin PrgUpdate.Position := I; end);
+        end)(InstRoot, CheckIdx);
+      end;
+
+      // Phase 2: let the user pick folders (one, several, all or none) and the mode:
+      // update / repair bad files / re-download all. Shown when something is
+      // outdated or a verify/force was requested from the button menu.
+      // Per-file selection happens after each folder's scan (frmUpdateSelect).
+      if (not AutoMode) and (Length(UpdateRoots) > 0) then
+        TThread.Synchronize(nil, procedure
+        var
+          Chosen: TArray<string>;
+          Mode:   TUpdateMode;
+        begin
+          if not TFormFolderSelect.Execute(InstRoots, UpdateRoots, OutdatedRoots, Chosen, Mode) then
+            UpdateRoots := []
+          else
+          begin
+            UpdateRoots := Chosen;
+            VerifyMode  := Mode = umRepair;
+            ForceAll    := Mode = umForceAll;
+          end;
+        end);
+
+      // Fire BeforePatch once before first actual download starts.
+      if (Length(UpdateRoots) > 0) and not HookFired then
+      begin
+        HookFired := True;
+        RunHookCmd(CapBeforePatch, CapProfile);
+      end;
+
+      for InstRoot in UpdateRoots do
+      begin
+        if FCancelDownload then Break;
+
+        if AutoMode and not ShouldAutoUpdate then
+        begin
+          // AUTO-CHECK (startup): hash-only gate. The manifest hash is the version
+          // token; if it differs we're in UpdateRoots already. No dir byte-scan —
+          // that would hammer CPU/disk on every launch for metadata-only bumps.
+          // Just surface that an update is pending; the user patches on demand.
+          TThread.Queue(nil, procedure
+          begin
+            Log(InstRoot + ': update available — click "Update Game" to patch.');
+            BtnCheckUpdate.Caption := 'Update Game';
+          end);
+          FUpdateAvailable := True;
+        end
+        else
+        begin
+          // IIAP: R is value param → no aliasing if UpdateRoots has multiple entries.
+          (procedure(const R: string)
+          var
+            OldManifest: string;
+            SelectFn:    TPatchSelect;
+          begin
+            // Diff against the manifest of the installed version (cached after the
+            // last update) so same-size content changes are caught too. Verify and
+            // re-download compare against the disk only.
+            OldManifest := '';
+            if not (VerifyMode or ForceAll) then
+            begin
+              var HF := TPath.Combine(R, 'patchdata\' + IntToStr(ProductId) + '.manifest.hash');
+              if TFile.Exists(HF) then
+              begin
+                var LH := LowerCase(Trim(TFile.ReadAllText(HF)));
+                if IsSha1Hex(LH) and (LH <> RemoteHash) then
+                  OldManifest := LoadCachedManifest(
+                    TPath.Combine(R, 'patchdata\' + LH + '.manifest.json'));
+              end;
+            end;
+
+            // Interactive runs list the changed files and let the user pick
+            // (Selected / All / None). Auto-update and re-download-all don't ask.
+            SelectFn := nil;
+            if not AutoMode and not ForceAll then
+              SelectFn := function(const Items: TArray<TPatchItem>;
+                out Selected: TArray<string>): Boolean
+              var
+                Ok:  Boolean;
+                Sel: TArray<string>;
+              begin
+                Ok := False;
+                TThread.Synchronize(nil, procedure
+                begin
+                  Ok := TFormUpdateSelect.Execute(R, Items, Sel);
+                end);
+                Selected := Sel;
+                Result   := Ok;
+              end;
+
+            TThread.Queue(nil, procedure
+            begin
+              Log('Verifying: ' + R);
+              LblProgress.Caption := 'Verifying files...';
+              PrgUpdate.Position  := 0;
+              // Pause/resume lives on the single update button (stays visible).
+              BtnCheckUpdate.Caption := 'Pause';
+            end);
+
+            RunPatcher(RemoteHash, R, ProductId,
+              procedure(const Msg: string)
+              begin
+                TThread.Queue(nil, procedure begin LogV(Msg); end);
+              end,
+              procedure(Current, Total: Integer; const FileName: string)
+              var
+                ElapsedSec, ETASec: Double;
+                ElapsedStr, ETAStr, Cap: string;
+                NowMs: Int64;
+              begin
+                // Throttle UI updates (label + bar) to ~5/sec so fast checks
+                // don't flood the main thread and starve the repaint.
+                NowMs := TThread.GetTickCount64;
+                if (NowMs - FLastProgMs < 200) and (Current < Total) then Exit;
+                FLastProgMs := NowMs;
+
+                var Elapsed := Now - StartTime;
+                ElapsedSec  := Elapsed * 86400.0;
+                ElapsedStr  := FormatDateTime('hh:nn:ss', Elapsed);
+                if (Current > 0) and (Total > 0) then
+                begin
+                  ETASec := ElapsedSec * (Total - Current) / Current;
+                  ETAStr := FormatDateTime('hh:nn:ss', ETASec / 86400.0);
+                end
+                else
+                  ETAStr := '--:--:--';
+                var Pct := 0;
+                if Total > 0 then Pct := (Current * 100) div Total;
+                // Compact caption (label wraps up to ~2 lines); filename last.
+                Cap := Format('%d%%  [%s / ETA %s]  %d / %d — %s',
+                              [Pct, ElapsedStr, ETAStr, Current, Total, FileName]);
+                TThread.Queue(nil, procedure
+                begin
+                  LblProgress.Caption := Cap;
+                  PrgUpdate.Max       := 100;
+                  PrgUpdate.Position  := Pct;
+                end);
+              end,
+              OldManifest, ForceAll,
+              function: Boolean begin Result := FCancelDownload; end,
+              FPauseEvent, False, nil, LoadIgnorePatterns, SelectFn);
+
+            TThread.Queue(nil, procedure
+            begin
+              Log(R + ': done. Total time: ' + FormatDateTime('hh:nn:ss', Now - StartTime));
+            end);
+          end)(InstRoot);
+        end; // else (actual download)
+      end; // for InstRoot in UpdateRoots
+
+      // Fire AfterPatch once all roots have been processed (no error path).
+      if HookFired then
+        RunHookCmd(CapAfterPatch, CapProfile);
+    except
+      on E: Exception do Error := E.Message;
+    end;
+
+    if not SkipFinalCleanup then
+    TThread.Queue(nil, procedure
+    begin
+      FDownloadActive        := False;
+      LblProgress.Caption    := 'Ready...';
+      PrgUpdate.Position     := 0;
+      BtnCheckUpdate.Enabled := True;
+      if FUpdateAvailable then
+      begin
+        BtnCheckUpdate.Caption := 'Update Game';
+      end
+      else
+      begin
+        BtnCheckUpdate.Caption := 'Check for Updates';
+        if FCancelDownload then
+          Log('Download cancelled.');
+      end;
+      // A failed or refused secure update must always be visible.
+      if (Error <> '') and not FCancelDownload then
+        Log('Update ERROR: ' + Error);
+      UpdateButtons;
+      if FCleanupOnExit then
+      begin
+        FCleanupOnExit := False;
+        Close;
+      end;
+    end);
+  end).Start;
+end;
+
+procedure TFormMain.TrayShowClick(Sender: TObject);
+begin
+  Show;
+  WindowState := wsNormal;
+  Application.BringToFront;
+end;
+
+procedure TFormMain.TrayIconDblClick(Sender: TObject);
+begin
+  TrayShowClick(Sender);
+end;
+
+procedure TFormMain.RefreshTrayMenu;
+var
+  SubMenu: TMenuItem;
+  Item:    TMenuItem;
+  Profs:   TArray<TNexonProfile>;
+begin
+  // Find "Launch Profile" submenu by name and rebuild its children.
+  SubMenu := FTrayProfilesSub;
+  if SubMenu = nil then Exit;
+  SubMenu.Clear;
+  Profs := LoadProfiles;
+  for var P in Profs do
+  begin
+    Item          := TMenuItem.Create(FTrayMenu);
+    Item.Caption  := StringReplace(P.Name, '&', '&&', [rfReplaceAll]);
+    Item.Hint     := P.Name; // real name (caption escapes & for accelerator)
+    Item.OnClick  := TrayProfileClick;
+    SubMenu.Add(Item);
+  end;
+  if Length(Profs) = 0 then
+  begin
+    Item         := TMenuItem.Create(FTrayMenu);
+    Item.Caption := '(no profiles)';
+    Item.Enabled := False;
+    SubMenu.Add(Item);
+  end;
+end;
+
+procedure TFormMain.TrayProfileClick(Sender: TObject);
+begin
+  TrayShowClick(Sender); // restore window so user can see launch progress
+  LaunchProfile(TMenuItem(Sender).Hint); // Hint holds real name; Caption has && escaping
+end;
+
+// Session time for a profile: HH:MM:SS if it's the currently-running session, else ''.
+function TFormMain.SessionTextFor(const Profile: string): string;
+begin
+  if (FSessionStart > 0) and (SameText(Profile, FSessionProfile)) then
+    Result := FormatDateTime('hh:nn:ss', Now - FSessionStart)
+  else
+    Result := '';
+end;
+
+// Live ticker: repaint the running profile's Session cell every second.
+procedure TFormMain.SessionTimerTick(Sender: TObject);
+var
+  I: Integer;
+begin
+  if (FSessionStart = 0) or (FSessionProfile = '') then
+  begin
+    FSessionTimer.Enabled := False;
+    Exit;
+  end;
+  LvProfiles.Items.BeginUpdate;
+  try
+    for I := 0 to LvProfiles.Items.Count - 1 do
+      if SameText(LvProfiles.Items[I].SubItems[0], FSessionProfile) then
+      begin
+        LvProfiles.Items[I].SubItems[3] := FormatDateTime('hh:nn:ss', Now - FSessionStart);
+        Break;
+      end;
+  finally
+    LvProfiles.Items.EndUpdate;
+  end;
+end;
+
+procedure TFormMain.GameExitHandler(Sender: TObject);
+var
+  Elapsed:        TDateTime;
+  Msg:            string;
+  ExitedProfile:  string;
+begin
+  ExitedProfile := FSessionProfile;
+  // Report session playtime (launch → exit) for the profile that was running.
+  if FSessionStart > 0 then
+  begin
+    Elapsed := Now - FSessionStart;
+    Msg := Format('Game exited. Session time: %s (%s).',
+      [FormatDateTime('hh:nn:ss', Elapsed), ExitedProfile]);
+    Log(Msg);
+    StatusBar.SimpleText := 'Session: ' + FormatDateTime('hh:nn:ss', Elapsed);
+    FSessionStart   := 0;
+    FSessionProfile := '';
+    FSessionTimer.Enabled := False;
+  end
+  else
+  begin
+    Log('Game exited.');
+    StatusBar.SimpleText := 'Game exited.';
+  end;
+  RunHookCmd(LoadHooks.AfterLaunch, ExitedProfile);
+  BtnLaunch.Enabled := True;
+  UpdateButtons;
+  LvProfiles.Repaint; // clear the Session cell for the ended profile
+  // Restore window if it was minimized to tray on game launch
+  if FTrayOnLaunch and not Visible then
+  begin
+    Show;
+    WindowState := wsNormal;
+    Application.BringToFront;
+  end;
+end;
+
+procedure TFormMain.LaunchProfile(const Name: string);
+var
+  Cookies, GamePath: string;
+  ProductId: Integer;
+begin
+  if Name = '' then begin ShowMessage('Select a profile.'); Exit; end;
+  GamePath  := Trim(FDefaultGameExe);
+  ProductId := GetProductId;
+
+  var AllProfs := LoadProfiles;
+  for var Prof in AllProfs do
+    if Prof.Name = Name then
+    begin
+      if Trim(Prof.GameExe) <> '' then GamePath := Trim(Prof.GameExe);
+      Break;
+    end;
+
+  if GamePath = '' then begin ShowMessage('Set game path in Settings.'); Exit; end;
+  if not TFile.Exists(GamePath) then
+  begin ShowMessage('Game exe not found: ' + GamePath); Exit; end;
+
+  Cookies := LoadCookies(Name);
+  if Cookies = '' then
+  begin
+    Log('No credentials for "' + Name + '" — opening login...');
+    PromptReLogin(Name);
+    Cookies := LoadCookies(Name);
+    if Cookies = '' then Exit;
+  end;
+
+  Log('Launching ' + Name + '...');
+  RunHookCmd(LoadHooks.BeforeLaunch, Name);
+  BtnLaunch.Enabled := False;
+  StatusBar.SimpleText := 'Game running — ' + Name;
+  if FTrayOnLaunch and not FStartMinimized then
+  begin
+    Hide;
+    WindowState := wsMinimized;
+  end;
+  try
+    try
+      FLauncher.Launch(Cookies, ProductId, GamePath);
+    except
+      on E: ETicketError do
+      begin
+        if Pos('401', E.Message) > 0 then
+        begin
+          Log('Session expired — checking...');
+          if TryRefreshCookies(Name, Cookies, procedure(Msg: string) begin Log(Msg); end) then
+            FLauncher.Launch(Cookies, ProductId, GamePath)
+          else
+          begin
+            PromptReLogin(Name);
+            Cookies := LoadCookies(Name);
+            if Cookies <> '' then
+              FLauncher.Launch(Cookies, ProductId, GamePath)
+            else
+              raise;
+          end;
+        end
+        else
+          raise;
+      end;
+    end;
+    UpdateLastUsed(Name);
+    if FRememberLastProfile then
+    begin
+      FLastSelectedProfile := Name;
+      SaveConfig;
+    end;
+    Log('Game launched: ' + ExtractFileName(GamePath));
+    // Start the session timer — display elapsed time until the client exits.
+    FSessionStart   := Now;
+    FSessionProfile := Name;
+    FSessionTimer.Enabled := True;
+    // BtnLaunch stays disabled until GameExitHandler fires
+  except
+    on E: EGamePlayableFailed do
+    begin
+      Log('Playable check failed: ' + E.Message);
+      ShowMessage(E.Message);
+      BtnLaunch.Enabled := True;
+      StatusBar.SimpleText := '';
+    end;
+    on E: Exception do
+    begin
+      Log('Error: ' + E.Message);
+      ShowMessage('Launch failed: ' + E.Message);
+      BtnLaunch.Enabled := True;
+      StatusBar.SimpleText := '';
+    end;
+  end;
+end;
+
+procedure TFormMain.SetProfileIcon(const Profile: string; IconIndex: Integer);
+var
+  I: Integer;
+begin
+  for I := 0 to LvProfiles.Items.Count - 1 do
+    if (LvProfiles.Items[I].SubItems.Count > 0) and
+       (LvProfiles.Items[I].SubItems[0] = Profile) then
+    begin
+      LvProfiles.Items[I].ImageIndex := IconIndex;
+      Break;
+    end;
+end;
+
+procedure TFormMain.StartupSessionCheck;
+var
+  Profiles: TArray<TNexonProfile>;
+  N:        Integer;
+begin
+  // Read profiles from JSON directly — don't rely on listview which may have
+  // timing issues during app startup (e.g., CredReadW transient fails).
+  Profiles := LoadProfiles;
+  N := Length(Profiles);
+  if N = 0 then Exit;
+
+  // One background thread; profiles checked sequentially to avoid hammering the API.
+  TThread.CreateAnonymousThread(procedure
+  var
+    C:     string;
+    Valid: Boolean;
+    Info:  TSessionInfo;
+  begin
+    for var I := 0 to N - 1 do
+    begin
+      // Capture by value: anonymous methods close over loop vars by reference,
+      // causing all iterations to share the last value. Value params fix this.
+      (procedure(const PName: string; const PDev: string)
+      begin
+        C := LoadCookies(PName);
+        if C = '' then
+        begin
+          TThread.Queue(nil, procedure
+          begin Log('Startup [' + PName + ']: no saved session — skipping.'); end);
+          Exit;
+        end;
+        Valid := TryRefreshCookies(PName, C,
+          procedure(Msg: string)
+          begin
+            TThread.Queue(nil, procedure begin Log('Startup [' + PName + ']: ' + Msg); end);
+          end);
+        Info.Valid     := Valid;
+        Info.CheckedAt := Now;
+        Info.HttpCode  := 0;
+        TThread.Queue(nil, procedure
+        begin
+          FSessionCache.AddOrSetValue(PName, Info);
+          SetProfileIcon(PName, IfThen(Valid, 1, 2));
+        end);
+      end)(Profiles[I].Name, Profiles[I].DeviceId);
+    end;
+  end).Start;
+end;
+
+procedure TFormMain.LoadNews;
+const
+  // Give the form time to fully draw and apply its theme before we touch the
+  // feed. Prevents a white/unthemed flash while the news list is being built.
+  NEWS_WARMUP_MS = 1000;
+begin
+  TThread.CreateAnonymousThread(procedure
+  var
+    Cached, News: TArray<TNewsItem>;
+  begin
+    // Let the UI settle (theme applied, first paint done) before any news work.
+    Sleep(NEWS_WARMUP_MS);
+
+    // Serve any cached news immediately (fast, offline) so the feed isn't blank.
+    Cached := LoadNewsCache(FProductId);
+    if Length(Cached) > 0 then
+      TThread.Queue(nil, procedure
+      begin
+        FNews := Cached;
+        FNewsFeed.SetNews(FNews);
+      end);
+
+    // Skip the network refresh if the cache is fresh enough (< 30 min old).
+    if not NewsCacheRefreshDue(Cached, FProductId, 30) then Exit;
+
+    try
+      News := FetchNews(FProductId);
+    except
+      News := nil;
+    end;
+    TThread.Queue(nil, procedure
+    begin
+      // Only replace what we rendered if a newer/complete list came back.
+      if Length(News) > 0 then
+      begin
+        FNews := News;
+        FNewsFeed.SetNews(FNews);
+        SaveNewsCache(FProductId, News);
+      end;
+    end);
+  end).Start;
+end;
+
+procedure TFormMain.CheckSessionCached(const Profile, Cookies: string);
+var
+  Info: TSessionInfo;
+begin
+  // Show cached result immediately; re-check only if stale (> SESSION_CACHE_SECS).
+  if FSessionCache.TryGetValue(Profile, Info) then
+  begin
+    var Age := SecondsBetween(Now, Info.CheckedAt);
+    if Age < SESSION_CACHE_SECS then
+    begin
+      SetProfileIcon(Profile, IfThen(Info.Valid, 1, 2));
+      if Info.Valid then
+        StatusBar.SimpleText := Profile + ': session OK (checked ' + IntToStr(Age) + 's ago)'
+      else
+        StatusBar.SimpleText := Profile + ': session expired — Profile > Refresh Token';
+      Exit;
+    end;
+  end;
+
+  // Cache stale or absent — background check.
+  StatusBar.SimpleText := Profile + ': checking session...';
+  TThread.CreateAnonymousThread(procedure
+  var
+    Status, NexonCode:  Integer;
+    Valid:   Boolean;
+    NewInfo: TSessionInfo;
+    Reason:  string;
+  begin
+    Valid             := CheckSessionValid(Cookies, Status, NexonCode);
+    NewInfo.Valid     := Valid;
+    NewInfo.HttpCode  := Status;
+    NewInfo.CheckedAt := Now;
+    TThread.Queue(nil, procedure
+    begin
+      FSessionCache.AddOrSetValue(Profile, NewInfo);
+      SetProfileIcon(Profile, IfThen(Valid, 1, 2));
+      if SelectedProfile = Profile then
+        if Valid then
+          StatusBar.SimpleText := Profile + ': session OK'
+        else
+        begin
+          Reason := NexonCodeToStr(NexonCode);
+          if Reason <> '' then Reason := ' (' + Reason + ')';
+          StatusBar.SimpleText := Profile + ': session expired' + Reason;
+        end;
+    end);
+  end).Start;
+end;
+
+procedure TFormMain.PromptReLogin(const Profile: string; Fresh: Boolean);
+var
+  NewCookies: string;
+  Status: Integer;
+begin
+  Log('Opening WebView2 login...');
+  if not TFormLoginWebView.Execute(NewCookies, Profile, Fresh) then
+  begin
+    Log('Re-login cancelled.');
+    Exit;
+  end;
+
+  // Validate returned cookies before saving — the page may close before
+  // launcher API's Set-Cookie commits, giving us stale web-scoped tokens.
+  if CheckSessionValid(NewCookies, Status) then
+  begin
+    SaveRefreshedCookies(Profile, NewCookies);
+    FSessionCache.Remove(Profile);
+    SetProfileIcon(Profile, 1);
+    Log('Re-login OK — credentials updated.');
+  end
+  else
+  begin
+    Log(Format('Session validation failed (HTTP %d) — trying again...', [Status]));
+    if TFormLoginWebView.Execute(NewCookies, Profile, Fresh) then
+    begin
+      SaveRefreshedCookies(Profile, NewCookies);
+      FSessionCache.Remove(Profile);
+      SetProfileIcon(Profile, 1);
+      Log('Re-login OK — credentials updated (2nd attempt).');
+    end
+    else
+      Log('Re-login cancelled (2nd attempt).');
+  end;
+end;
+
+procedure TFormMain.LvProfilesSelectItem(Sender: TObject; Item: TListItem;
+  Selected: Boolean);
+var
+  Profile, Cookies: string;
+begin
+  UpdateButtons;
+  if not Selected then
+  begin
+    StatusBar.SimpleText := '';
+    Exit;
+  end;
+  if FInRefreshProfiles then Exit;
+  Profile := SelectedProfile;
+  Cookies := LoadCookies(Profile);
+  if (Profile = '') or (Cookies = '') then
+  begin
+    StatusBar.SimpleText := Profile + ': no credentials stored';
+    Exit;
+  end;
+  CheckSessionCached(Profile, Cookies);
+end;
+
+
+end.
