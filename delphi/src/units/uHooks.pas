@@ -21,7 +21,7 @@ function RunHookCmd(const Cmd: string; const ProfileName: string = ''): Boolean;
 implementation
 
 uses
-  Winapi.Windows, System.SysUtils, System.IOUtils, IniFiles;
+  Winapi.Windows, Winapi.ShellAPI, System.SysUtils, System.IOUtils, IniFiles;
 
 function HooksConfigPath: string;
 begin
@@ -59,26 +59,53 @@ begin
   end;
 end;
 
+procedure SplitCmd(const C: string; out ExePath, Params: string);
+var
+  P: Integer;
+begin
+  if (Length(C) > 0) and (C[1] = '"') then
+  begin
+    P := Pos('"', C, 2);
+    if P > 0 then
+    begin
+      ExePath := Copy(C, 2, P - 2);
+      Params  := Trim(Copy(C, P + 1, MaxInt));
+    end
+    else
+      ExePath := C;
+  end
+  else
+  begin
+    P := Pos(' ', C);
+    if P > 0 then
+    begin
+      ExePath := Copy(C, 1, P - 1);
+      Params  := Trim(Copy(C, P + 1, MaxInt));
+    end
+    else
+      ExePath := C;
+  end;
+end;
+
 function RunHookCmd(const Cmd: string; const ProfileName: string = ''): Boolean;
 var
-  SI: TStartupInfo;
-  PI: TProcessInformation;
-  C:  string;
+  C, ExePath, Params: string;
+  Info: TShellExecuteInfo;
 begin
   Result := False;
   C := Trim(Cmd);
   if C = '' then Exit;
   C := StringReplace(C, '%PROFILE%', ProfileName, [rfReplaceAll, rfIgnoreCase]);
-  FillChar(SI, SizeOf(SI), 0);
-  SI.cb := SizeOf(SI);
-  FillChar(PI, SizeOf(PI), 0);
-  Result := CreateProcessW(nil, PChar(C), nil, nil, False,
-       CREATE_NEW_CONSOLE, nil, nil, SI, PI);
-  if Result then
-  begin
-    CloseHandle(PI.hThread);
-    CloseHandle(PI.hProcess); // fire-and-forget
-  end;
+  SplitCmd(C, ExePath, Params);
+  FillChar(Info, SizeOf(Info), 0);
+  Info.cbSize       := SizeOf(Info);
+  Info.fMask        := SEE_MASK_NOCLOSEPROCESS;
+  Info.lpFile       := PChar(ExePath);
+  Info.lpParameters := PChar(Params);
+  Info.nShow        := SW_SHOWNORMAL;
+  Result := ShellExecuteExW(@Info);
+  if Result and (Info.hProcess <> 0) then
+    CloseHandle(Info.hProcess); // fire-and-forget
 end;
 
 end.
