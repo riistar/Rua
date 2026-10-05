@@ -47,7 +47,7 @@ function LoadCachedManifest(const Path: string): string;
 implementation
 
 const
-  MANIFEST_BASE = 'http://download2.nexon.net/Game/nxl/games/10200/';
+  MANIFEST_BASE = 'https://download2.nexon.net/Game/nxl/games/10200/';
   DOWNLOAD_BASE = 'https://download2.nexon.net/Game/nxl/games/10200/10200/';
 
 // ---------------------------------------------------------------------------
@@ -452,7 +452,9 @@ var
       end;
     end;
     if AllMatch then
-      Log('    SHA1(compressed) = objects[] — algorithm confirmed');
+      Log('    SHA1(compressed) = objects[] — algorithm confirmed')
+    else
+      raise Exception.CreateFmt('Download hash mismatch — aborting: %s', [E.Path]);
   end;
 
 begin
