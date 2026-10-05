@@ -1461,7 +1461,9 @@ begin
       if (Length(UpdateRoots) > 0) and not HookFired then
       begin
         HookFired := True;
-        RunHookCmd(CapBeforePatch, CapProfile);
+        TThread.Queue(nil, procedure begin Log('Hook [BeforePatch]: ' + CapBeforePatch); end);
+        if not RunHookCmd(CapBeforePatch, CapProfile) then
+          TThread.Queue(nil, procedure begin Log('Hook [BeforePatch] failed to start.'); end);
       end;
 
       for InstRoot in UpdateRoots do
@@ -1585,8 +1587,12 @@ begin
       end; // for InstRoot in UpdateRoots
 
       // Fire AfterPatch once all roots have been processed (no error path).
-      if HookFired then
-        RunHookCmd(CapAfterPatch, CapProfile);
+      if HookFired and (CapAfterPatch <> '') then
+      begin
+        TThread.Queue(nil, procedure begin Log('Hook [AfterPatch]: ' + CapAfterPatch); end);
+        if not RunHookCmd(CapAfterPatch, CapProfile) then
+          TThread.Queue(nil, procedure begin Log('Hook [AfterPatch] failed to start.'); end);
+      end;
     except
       on E: Exception do Error := E.Message;
     end;
@@ -1778,7 +1784,13 @@ begin
     Log('Game exited.');
     StatusBar.SimpleText := 'Game exited.';
   end;
-  RunHookCmd(LoadHooks.AfterLaunch, ExitedProfile);
+  var AHook := LoadHooks.AfterLaunch;
+  if AHook <> '' then
+  begin
+    Log('Hook [AfterLaunch]: ' + AHook);
+    if not RunHookCmd(AHook, ExitedProfile) then
+      Log('Hook [AfterLaunch] failed to start (error ' + IntToStr(GetLastError) + ')');
+  end;
   BtnLaunch.Enabled := True;
   UpdateButtons;
   LvProfiles.Repaint; // clear the Session cell for the ended profile
@@ -1822,7 +1834,13 @@ begin
   end;
 
   Log('Launching ' + Name + '...');
-  RunHookCmd(LoadHooks.BeforeLaunch, Name);
+  var BLHook := LoadHooks.BeforeLaunch;
+  if BLHook <> '' then
+  begin
+    Log('Hook [BeforeLaunch]: ' + BLHook);
+    if not RunHookCmd(BLHook, Name) then
+      Log('Hook [BeforeLaunch] failed to start (error ' + IntToStr(GetLastError) + ')');
+  end;
   BtnLaunch.Enabled := False;
   StatusBar.SimpleText := 'Game running — ' + Name;
   if FTrayOnLaunch and not FStartMinimized then

@@ -16,7 +16,7 @@ type
 
 function  LoadHooks: TRuaHooks;
 procedure SaveHooks(const H: TRuaHooks);
-procedure RunHookCmd(const Cmd: string; const ProfileName: string = '');
+function RunHookCmd(const Cmd: string; const ProfileName: string = ''): Boolean;
 
 implementation
 
@@ -59,20 +59,22 @@ begin
   end;
 end;
 
-procedure RunHookCmd(const Cmd: string; const ProfileName: string = '');
+function RunHookCmd(const Cmd: string; const ProfileName: string = ''): Boolean;
 var
   SI: TStartupInfo;
   PI: TProcessInformation;
   C:  string;
 begin
+  Result := False;
   C := Trim(Cmd);
   if C = '' then Exit;
   C := StringReplace(C, '%PROFILE%', ProfileName, [rfReplaceAll, rfIgnoreCase]);
   FillChar(SI, SizeOf(SI), 0);
   SI.cb := SizeOf(SI);
   FillChar(PI, SizeOf(PI), 0);
-  if CreateProcessW(nil, PChar(C), nil, nil, False,
-       CREATE_NO_WINDOW, nil, nil, SI, PI) then
+  Result := CreateProcessW(nil, PChar(C), nil, nil, False,
+       CREATE_NEW_CONSOLE, nil, nil, SI, PI);
+  if Result then
   begin
     CloseHandle(PI.hThread);
     CloseHandle(PI.hProcess); // fire-and-forget
