@@ -246,7 +246,7 @@ function RuaRunPatcher(manifest_hash, install_root: PChar; product_id: Integer;
 begin
   try
     RunPatcher(manifest_hash, install_root, product_id,
-      nil, // Log callback (no text log in DLL mode — caller uses progress_cb)
+      procedure(const Msg: string) begin end, // no text log in DLL mode — caller uses progress_cb; RunPatcher always calls Log
       procedure(Cur, Total: Integer; const FileName: string)
       begin
         if Assigned(progress_cb) then

@@ -27,6 +27,8 @@ type
       const aCookieList: ICoreWebView2CookieList);
     procedure WVNavigationCompleted(Sender: TObject; const aWebView: ICoreWebView2;
       const aArgs: ICoreWebView2NavigationCompletedEventArgs);
+    procedure WVNavigationStarting(Sender: TObject; const aWebView: ICoreWebView2;
+      const aArgs: ICoreWebView2NavigationStartingEventArgs);
     procedure WVInitializationError(Sender: TObject; aErrorCode: HRESULT;
       const aErrorMessage: wvstring);
     function  TryCreateBrowser: Boolean;
@@ -48,6 +50,7 @@ type
 implementation
 
 uses
+  Winapi.ActiveX,
   uWVCoreWebView2CookieList, uWVCoreWebView2Cookie;
 
 destructor TLoginBrowserWV.Destroy;
@@ -77,6 +80,7 @@ begin
   FBrowser.OnAfterCreated        := WVAfterCreated;
   FBrowser.OnGetCookiesCompleted := WVGetCookiesCompleted;
   FBrowser.OnNavigationCompleted := WVNavigationCompleted;
+  FBrowser.OnNavigationStarting  := WVNavigationStarting;
   FBrowser.OnInitializationError := WVInitializationError;
   FWindowParent.Browser := FBrowser;
 
@@ -112,8 +116,34 @@ end;
 procedure TLoginBrowserWV.WVAfterCreated(Sender: TObject);
 begin
   if FDestroying then Exit;
+  // This window only signs in to Nexon: no developer tools (which could read
+  // the session), no default context menu, no status-bar link previews.
+  FBrowser.DevToolsEnabled            := False;
+  FBrowser.DefaultContextMenusEnabled := False;
+  FBrowser.StatusBarEnabled           := False;
   FWindowParent.UpdateSize;
   DoReady;
+end;
+
+// Sign-in pages load only over HTTPS. A host allowlist is deliberately not
+// applied: Nexon's Google/Apple/social sign-in and captcha flows redirect
+// through other providers, and blocking them would break sign-in and 2FA.
+procedure TLoginBrowserWV.WVNavigationStarting(Sender: TObject;
+  const aWebView: ICoreWebView2; const aArgs: ICoreWebView2NavigationStartingEventArgs);
+var
+  P:   PWideChar;
+  Uri: string;
+begin
+  if FDestroying or (aArgs = nil) then Exit;
+  P := nil;
+  if (aArgs.Get_uri(P) <> S_OK) or (P = nil) then Exit;
+  try
+    Uri := P;
+  finally
+    CoTaskMemFree(P);
+  end;
+  if not (Uri.StartsWith('https://', True) or SameText(Uri, 'about:blank')) then
+    aArgs.Set_Cancel(1);
 end;
 
 procedure TLoginBrowserWV.WVInitializationError(Sender: TObject;

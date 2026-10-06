@@ -16,7 +16,9 @@ type
 
 function  LoadHooks: TRuaHooks;
 procedure SaveHooks(const H: TRuaHooks);
-function RunHookCmd(const Cmd: string; const ProfileName: string = ''): Boolean;
+function  RunHookCmd(const Cmd: string; const ProfileName: string = ''): Boolean;
+// True when this process runs with an elevated (administrator) token.
+function IsProcessElevated: Boolean;
 
 implementation
 
@@ -59,6 +61,23 @@ begin
   end;
 end;
 
+function IsProcessElevated: Boolean;
+var
+  Token:    THandle;
+  Elevated: DWORD;
+  Len:      DWORD;
+begin
+  Result := False;
+  if not OpenProcessToken(GetCurrentProcess, TOKEN_QUERY, Token) then Exit;
+  try
+    Elevated := 0;
+    if GetTokenInformation(Token, TokenElevation, @Elevated, SizeOf(Elevated), Len) then
+      Result := Elevated <> 0;
+  finally
+    CloseHandle(Token);
+  end;
+end;
+
 procedure SplitCmd(const C: string; out ExePath, Params: string);
 var
   P: Integer;
@@ -95,6 +114,10 @@ begin
   Result := False;
   C := Trim(Cmd);
   if C = '' then Exit;
+  // Hooks come from the user-writable %APPDATA%\Rua\config.ini. Running them
+  // from an elevated Rua would hand administrator rights to whatever wrote that
+  // file, so elevated sessions never run hooks.
+  if IsProcessElevated then Exit;
   C := StringReplace(C, '%PROFILE%', ProfileName, [rfReplaceAll, rfIgnoreCase]);
   SplitCmd(C, ExePath, Params);
   FillChar(Info, SizeOf(Info), 0);
