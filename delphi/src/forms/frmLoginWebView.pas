@@ -84,7 +84,7 @@ implementation
 uses
   System.StrUtils, System.UITypes, Vcl.Dialogs,
   uLoginBrowserWV, uLoginBrowserCEF, uCefRuntime,
-  uNexonAPI, uDeviceId, uBrowserCookies;
+  uNexonAPI, uDeviceId, uCookieUtil;
 
 const
   // Login page — nexon.com account login. After email/password login the page
@@ -113,6 +113,9 @@ const
   // writes it to document.cookie so GetCookies picks it up on the next poll.
   INTERCEPT_JS =
     '(function(){' +
+    // Only Nexon's own pages: never wrap fetch/XHR on third-party sign-in or
+    // captcha pages the login flow may pass through.
+    'if(!/(^|\.)nexon\.com$/i.test(location.hostname)||location.protocol!=="https:")return;' +
     // Inject arenaSid if missing (required by launcher/email/login API).
     // The official launcher's nxl redirector sets this via arena-sid.js.
     // Without it, the login API returns a web-only session (no NxLSession).
@@ -774,7 +777,7 @@ begin
   if (LastNxLExpiry = 0) and (Pos('NxLSession', FCookies) > 0) then
     SetLastNxLExpiry(Now + 28800 / SecsPerDay);
   LblStatus.Caption := Msg;
-  if FindCmdLineSwitch('mooncrest-connect') then
+  if FindCmdLineSwitch('rua-connect') then
   begin
     ModalResult := mrOK;
     Exit;

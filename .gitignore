@@ -1,54 +1,19 @@
-# Delphi build output
+# Delphi build outputs
+*.dcu
 *.exe
 *.dll
-*.dcu
-*.dcpil
 *.bpl
-*.drc
+*.dcp
 *.res
-*.rsm
+*.dres
 *.map
-*.tds
-*.drc
 *.local
-*.identcache
-*.tvsconfig
-*.skincfg
-
-# Temp/build directories
 __history/
 __recovery/
-__snapshots/
-bin/
-tmp_*/
-delphi/build/
-Win32/
-Win64/
+*.identcache
+*.tvsconfig
+*.dsk
 
-# IDE
-*.cbk
-*.~*
-*.bak
-
-# OS
-Thumbs.db
-Desktop.ini
-
-# Release binaries (built)
-release/*.exe
-release/nxl3p_shim.dll
-release/nxl3p_stub.exe
-
-# Runtime dependencies (tracked)
-!release/sqlite3.dll
-!release/WebView2Loader.dll
-
-# Local-only notes & logs (not published)
-AGENTS.md
-CLAUDE.md
-PLAN.md
-RE.md
-RUA_LINUX_PLAN.md
-*.log
-release/
-*.zip
+# BCC/DCC compiler copies
+bcc/
+dcc/

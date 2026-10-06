@@ -1,10 +1,14 @@
 program SecurityTests;
 {$APPTYPE CONSOLE}
 uses
-  Winapi.Windows, System.SysUtils, System.Classes,
+  Winapi.Windows, System.SysUtils, System.Classes, System.IOUtils, System.ZLib,
   uLaunchSecurity in 'src\units\uLaunchSecurity.pas',
   uProtocol in 'src\units\uProtocol.pas',
-  uPipeServer in 'src\units\uPipeServer.pas';
+  uPipeServer in 'src\units\uPipeServer.pas',
+  uIgnoreList in 'src\units\uIgnoreList.pas',
+  uNxlPatcher in 'src\units\uNxlPatcher.pas',
+  uHooks in 'src\units\uHooks.pas',
+  uSignature in 'src\units\uSignature.pas';
 
 const FakeTicket = 'SYNTHETIC-TICKET-NOT-A-CREDENTIAL';
 procedure Check(Condition: Boolean; const MessageText: string);
@@ -130,6 +134,116 @@ begin
   Writeln('PASS: memory ticket roundtrip, cleanup, and size limit');
 end;
 
+function PathRejected(const P: string): Boolean;
+begin
+  Result := False;
+  try SafeManifestPath(P); except Result := True; end;
+end;
+
+function TargetRejected(const Root, P: string): Boolean;
+begin
+  Result := False;
+  try ContainedTarget(Root, P); except Result := True; end;
+end;
+
+function DecompRejected(const Data: TBytes; Limit: Int64): Boolean;
+begin
+  Result := False;
+  try BoundedZlibDecomp(Data, Limit); except Result := True; end;
+end;
+
+function Zlib(const Data: TBytes): TBytes;
+var Output: TBytesStream; Z: TCompressionStream;
+begin
+  Output := TBytesStream.Create;
+  try
+    Z := TCompressionStream.Create(clDefault, Output);
+    try if Length(Data) > 0 then Z.WriteBuffer(Data[0], Length(Data)); finally Z.Free; end;
+    Result := Copy(Output.Bytes, 0, Output.Size);
+  finally Output.Free; end;
+end;
+
+procedure TestPatcherRules;
+const
+  HOSTILE: array[0..15] of string = ('..\evil.dll', 'a\..\..\evil.dll', '\Windows\evil.dll',
+    'C:\evil.dll', '\\server\share\x', 'package\data.it:stream', 'CON', 'nul.txt', 'aux\x',
+    'dir\file.', 'dir \x', 'a\\b', '.\x', 'a/../../b', 'a<b', 'COM1.dll');
+var
+  Root, Path, ActualTarget, ExpectedTarget: string;
+  Data, Compressed, Back: TBytes;
+begin
+  Check(Sha1Hex(TEncoding.ASCII.GetBytes('abc')) = 'a9993e364706816aba3e25717850c26c9cd0d89d', 'SHA1 known answer');
+  Check(IsSha1Hex('eaeb63990ab6ca7b4605c35db84fc2b29ffdad19'), 'Valid manifest id rejected');
+  Check(not IsSha1Hex('EAEB63990AB6CA7B4605C35DB84FC2B29FFDAD19'), 'Uppercase id accepted');
+  Check(not IsSha1Hex('../../../../evil'), 'Path accepted as id');
+  Check(not IsSha1Hex(''), 'Empty id accepted');
+  for Path in HOSTILE do
+    Check(PathRejected(Path), 'Hostile manifest path accepted: ' + Path);
+  Check(PathRejected('x' + #7), 'Control character accepted');
+  Check(PathRejected(StringOfChar('a', 201)), 'Over-long path accepted');
+  Check(SafeManifestPath('package\data_00906.it') = 'package\data_00906.it', 'Normal path rejected');
+  Check(SafeManifestPath('mp3/Title.mp3') = 'mp3\Title.mp3', 'Forward slash not normalized');
+
+  Root := TPath.Combine(TPath.GetTempPath, 'rua-tests-' + TGUID.NewGuid.ToString.Replace('{', '').Replace('}', ''));
+  TDirectory.CreateDirectory(TPath.Combine(Root, 'appdata'));
+  try
+    Check(ResolvePatchFileRoot(Root) = TPath.Combine(Root, 'appdata'), 'Nexon layout not resolved to appdata');
+    Check(ResolvePatchFileRoot(TPath.Combine(Root, 'appdata')) = TPath.Combine(Root, 'appdata'), 'appdata root changed');
+    TFile.WriteAllText(TPath.Combine(Root, 'Client.exe'), 'x');
+    Check(ResolvePatchFileRoot(Root) = Root, 'Client.exe-beside-patchdata layout not kept');
+    ActualTarget := ContainedTarget(Root, 'package\a.it');
+    ExpectedTarget := TPath.Combine(Root, 'package\a.it');
+    Check(SameText(ActualTarget, ExpectedTarget),
+      'Contained target wrong: expected [' + ExpectedTarget + '] actual [' + ActualTarget + ']');
+    Check(TargetRejected(Root, '..\outside.it'), 'Escape accepted');
+  finally
+    TDirectory.Delete(Root, True);
+  end;
+
+  SetLength(Data, 2 * 1024 * 1024);
+  FillChar(Data[0], Length(Data), 7);
+  Compressed := Zlib(Data);
+  Check(DecompRejected(Compressed, 1024 * 1024), 'Decompression limit not enforced');
+  Back := BoundedZlibDecomp(Compressed, 4 * 1024 * 1024);
+  Check(Sha1Hex(Back) = Sha1Hex(Data), 'Part SHA1 differs after roundtrip');
+  Back[0] := Back[0] xor 1;
+  Check(Sha1Hex(Back) <> Sha1Hex(Data), 'Corrupted part matched');
+  Writeln('PASS: patcher ids, path validation, layout, containment, size limits and part verification');
+end;
+
+procedure TestSignature(const RealClient: string);
+var
+  Why, Dir, Fake: string;
+  H: THandle;
+begin
+  Check(not IsNexonSignedClient(TPath.Combine(GetEnvironmentVariable('SystemRoot'), 'System32\notepad.exe'), 0, Why),
+    'Non-Client.exe name accepted');
+  Dir := TPath.Combine(TPath.GetTempPath, 'rua-sig-' + TGUID.NewGuid.ToString.Replace('{', '').Replace('}', ''));
+  TDirectory.CreateDirectory(Dir);
+  try
+    Fake := TPath.Combine(Dir, 'Client.exe');
+    TFile.Copy(TPath.Combine(GetEnvironmentVariable('SystemRoot'), 'System32\notepad.exe'), Fake);
+    Check(not IsNexonSignedClient(Fake, 0, Why), 'Non-Nexon Client.exe accepted');
+    Writeln('  refused as expected: ', Why);
+  finally
+    TDirectory.Delete(Dir, True);
+  end;
+  if RealClient <> '' then
+  begin
+    H := CreateFile(PChar(RealClient), GENERIC_READ, FILE_SHARE_READ, nil, OPEN_EXISTING, 0, 0);
+    Check(H <> INVALID_HANDLE_VALUE, 'Could not open ' + RealClient);
+    try
+      Check(IsNexonSignedClient(RealClient, H, Why), 'Real Nexon client refused: ' + Why);
+    finally
+      CloseHandle(H);
+    end;
+    Writeln('PASS: signature check accepts the installed Nexon client and refuses others');
+  end
+  else
+    Writeln('PASS: signature check refuses non-Nexon clients (pass --nexon-client <path> to test acceptance)');
+  Writeln('  this process elevated: ', BoolToStr(IsProcessElevated, True));
+end;
+
 begin
   try
     if ParamStr(1) = '--client' then ClientMode
@@ -137,6 +251,8 @@ begin
       TestMapping;
       TestPipe('valid');
       TestPipe('oversize');
+      TestPatcherRules;
+      if ParamStr(1) = '--nexon-client' then TestSignature(ParamStr(2)) else TestSignature('');
       Writeln('PASS: synthetic security tests complete. No game or login was used.');
     end;
   except

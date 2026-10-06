@@ -6,7 +6,6 @@ uses
   Vcl.Forms,
   uCLI           in 'src\units\uCLI.pas',
   frmMain        in 'src\forms\frmMain.pas'        {FormMain},
-  frmLogin          in 'src\forms\frmLogin.pas'          {FormLogin},
   frmLoginWebView   in 'src\forms\frmLoginWebView.pas'  {FormLoginWebView},
   frmProfile     in 'src\forms\frmProfile.pas'     {FormProfile},
   frmProfileEdit in 'src\forms\frmProfileEdit.pas' {FormProfileEdit},
@@ -18,7 +17,8 @@ uses
   uNexonAPI     in 'src\units\uNexonAPI.pas',
   uDeviceId     in 'src\units\uDeviceId.pas',
   uGameLaunch   in 'src\units\uGameLaunch.pas',
-  uBrowserCookies in 'src\units\uBrowserCookies.pas',
+  uCookieUtil     in 'src\units\uCookieUtil.pas',
+  uSignature      in 'src\units\uSignature.pas',
   uNxlPatcher     in 'src\units\uNxlPatcher.pas',
   uHooks          in 'src\units\uHooks.pas',
   uLoginBrowser    in 'src\units\uLoginBrowser.pas',
@@ -30,7 +30,7 @@ uses
 
 {$R *.res}
 
-function ConnectMooncrestAccount: Integer;
+function ConnectAccount: Integer;
 var
   Profiles: TArray<TNexonProfile>;
   Profile: TNexonProfile;
@@ -72,6 +72,11 @@ begin
 end;
 
 begin
+  // Elevated (game launch): load DLLs only from System32 and Rua's own folder,
+  // never from the current directory or PATH.
+  if IsProcessElevated then
+    RestrictDllSearchForElevation;
+
   // CEF subprocess mode: Chromium relaunches Rua.exe with --type=renderer|gpu-process|...
   // for its helper processes (login browser under Wine). Must run before anything else.
   if IsCefSubProcess then
@@ -84,22 +89,8 @@ begin
   if IsCLIMode then
     Halt(RunCLI);
 
-  // Stub mode: we are running as a copy named nexon_client.exe.
-  // nexon_api_x64.dll scans for nexon_client.exe by process name before
-  // touching the named pipe. We satisfy that check without running the
-  // real Nexon Launcher. Just wait until signalled then exit.
-  if FindCmdLineSwitch('pipe-stub') then
-  begin
-    var ExitEv := OpenEventW(SYNCHRONIZE, False, 'NXL3P_StubExit');
-    if ExitEv = 0 then
-      Sleep(120000) // fallback: 2 min
-    else
-    begin
-      WaitForSingleObject(ExitEv, 120000);
-      CloseHandle(ExitEv);
-    end;
-    Halt(0);
-  end;
+  // The former fixed-name '-pipe-stub' mode was removed: nxl3p_stub.exe (with a
+  // random per-launch exit event) is the only nexon_client.exe stand-in.
 
   var Mutex := CreateMutex(nil, True, 'Global\RuaLauncher_SingleInstance');
   if (Mutex = 0) or (GetLastError = ERROR_ALREADY_EXISTS) then
@@ -119,11 +110,11 @@ begin
     TStyleManager.TrySetStyle('Sky');
   Application.Title := 'Rua';
   // Sign-in only: omit the main window, startup updates and profile-name prompt.
-  if FindCmdLineSwitch('mooncrest-connect') then
+  if FindCmdLineSwitch('rua-connect') then
   begin
     var ConnectResult := 1;
     try
-      ConnectResult := ConnectMooncrestAccount;
+      ConnectResult := ConnectAccount;
     except
       on E: Exception do
         Application.ShowException(E);

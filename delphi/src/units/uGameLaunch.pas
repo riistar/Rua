@@ -18,6 +18,12 @@ type
     FStubPath:      string;   // nexon_client.exe stub copy
     FStubProcess:   THandle;
     FStubExitEvent: THandle;
+    // Held for the whole session: the deployed copies deny writes/deletes and
+    // the folders deny deletes/renames, so nothing can be swapped after checks.
+    FStubFile:      THandle;
+    FShimFile:      THandle;
+    FOurDirLock:    THandle;
+    FBinDirLock:    THandle;
     FGameRunning:   Boolean;
     FOnGameExit:    TNotifyEvent;
     procedure StopPipe;
@@ -35,13 +41,23 @@ implementation
 uses
   Winapi.Windows, Winapi.ShellAPI,
   System.Hash, System.NetEncoding,
-  System.IOUtils, uLaunchSecurity;
+  System.IOUtils, uLaunchSecurity, uHooks, uSignature;
 
-const
-  ERROR_ELEVATION_REQUIRED = 740; // not in Winapi.Windows
+var
+  GElevated: Integer = -1; // -1 unknown, 0 no, 1 yes
+
+function Elevated: Boolean;
+begin
+  if GElevated < 0 then
+    GElevated := Ord(IsProcessElevated);
+  Result := GElevated = 1;
+end;
 
 procedure LaunchLog(const Msg: string);
 begin
+  // Diagnostic only, never secrets. An elevated process must not write to a
+  // fixed name in the user-writable %TEMP% (a planted link could redirect it).
+  if Elevated then Exit;
   try
     TFile.AppendAllText(
       GetEnvironmentVariable('TEMP') + '\nxl_launch_debug.txt',
@@ -79,6 +95,95 @@ begin
       else Result := Result + ' ' + Params[I];
 end;
 
+procedure CloseIfOpen(var H: THandle);
+begin
+  if (H <> 0) and (H <> INVALID_HANDLE_VALUE) then CloseHandle(H);
+  H := 0;
+end;
+
+procedure RefuseLink(H: THandle; const Path: string);
+var
+  Info: TByHandleFileInformation;
+begin
+  if not GetFileInformationByHandle(H, Info) then RaiseLastOSError;
+  if (Info.dwFileAttributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0 then
+    raise Exception.CreateFmt('Refusing a linked path during launch: %s', [Path]);
+end;
+
+// Opens a folder so it cannot be deleted, renamed or replaced by a junction
+// while the handle is held. The folder itself must not be a link.
+function LockFolder(const Dir: string): THandle;
+begin
+  Result := CreateFile(PChar(Dir), FILE_READ_ATTRIBUTES, FILE_SHARE_READ or FILE_SHARE_WRITE,
+    nil, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS or FILE_FLAG_OPEN_REPARSE_POINT, 0);
+  if Result = INVALID_HANDLE_VALUE then RaiseLastOSError;
+  try
+    RefuseLink(Result, Dir);
+  except
+    CloseHandle(Result);
+    raise;
+  end;
+end;
+
+function Sha256OfHandle(H: THandle): string;
+var
+  Stream: THandleStream;
+  Hash:   THashSHA2;
+  Buf:    TBytes;
+  N:      Integer;
+begin
+  Stream := THandleStream.Create(H);
+  try
+    Stream.Position := 0;
+    Hash := THashSHA2.Create; // SHA-256 by default
+    SetLength(Buf, 65536);
+    repeat
+      N := Stream.Read(Buf[0], Length(Buf));
+      if N > 0 then Hash.Update(Buf[0], N);
+    until N <= 0;
+    Result := Hash.HashAsString;
+  finally
+    Stream.Free;
+  end;
+end;
+
+// Copies Src to Dst without following an existing link at Dst, then reopens the
+// copy denying writes/deletes and confirms it is byte-identical to Src. The
+// returned handle keeps it that way until closed; it still allows the reads and
+// image loads the stub/game need.
+function DeployVerified(const Src, Dst: string): THandle;
+var
+  SrcHandle: THandle;
+  SrcHash:   string;
+begin
+  SrcHandle := CreateFile(PChar(Src), GENERIC_READ, FILE_SHARE_READ, nil, OPEN_EXISTING,
+    FILE_FLAG_OPEN_REPARSE_POINT, 0);
+  if SrcHandle = INVALID_HANDLE_VALUE then RaiseLastOSError;
+  try
+    RefuseLink(SrcHandle, Src);
+    SrcHash := Sha256OfHandle(SrcHandle);
+    // DeleteFile removes a link itself, never its target. CopyFile then refuses
+    // to overwrite anything that reappears, so a race fails closed.
+    if (GetFileAttributes(PChar(Dst)) <> INVALID_FILE_ATTRIBUTES) and not DeleteFile(PChar(Dst)) then
+      RaiseLastOSError;
+    if not CopyFile(PChar(Src), PChar(Dst), True) then RaiseLastOSError;
+  finally
+    CloseHandle(SrcHandle);
+  end;
+  Result := CreateFile(PChar(Dst), GENERIC_READ, FILE_SHARE_READ, nil, OPEN_EXISTING,
+    FILE_FLAG_OPEN_REPARSE_POINT, 0);
+  if Result = INVALID_HANDLE_VALUE then RaiseLastOSError;
+  try
+    RefuseLink(Result, Dst);
+    if not SameText(Sha256OfHandle(Result), SrcHash) then
+      raise Exception.CreateFmt('Launch helper copy failed verification: %s', [Dst]);
+  except
+    CloseHandle(Result);
+    DeleteFile(PChar(Dst));
+    raise;
+  end;
+end;
+
 { TGameLauncher }
 
 procedure TGameLauncher.StopPipe;
@@ -108,6 +213,8 @@ begin
     CloseHandle(FStubProcess);
     FStubProcess := 0;
   end;
+  CloseIfOpen(FStubFile);
+  CloseIfOpen(FShimFile);
   if FShimPath <> '' then
   begin
     try TFile.Delete(FShimPath); except end;
@@ -118,6 +225,8 @@ begin
     try TFile.Delete(FStubPath); except end;
     FStubPath := '';
   end;
+  CloseIfOpen(FBinDirLock);
+  CloseIfOpen(FOurDirLock);
 end;
 
 destructor TGameLauncher.Destroy;
@@ -151,7 +260,8 @@ var
   ShimReadyEv: THandle;
   StubEventName: string;
   StubGuid: TGUID;
-  SEI: TShellExecuteInfo;
+  ClientFile: THandle;
+  Refusal: string;
 begin
   PidStr  := IntToStr(ProductId);
   GameDir := ExtractFileDir(GameExePath);
@@ -164,6 +274,21 @@ begin
   if not TFile.Exists(OurDir + '\nxl3p_stub.exe') or
      not TFile.Exists(OurDir + '\nxl3p_shim.dll') then
     raise Exception.Create('Rua launch helpers are missing. Repair the installation before signing in.');
+
+  // Only Nexon's signed Client.exe receives the launch ticket (and, elevated,
+  // administrator rights). The handle denies writes until the game has started,
+  // so the verified file is the one that runs.
+  ClientFile := CreateFile(PChar(GameExePath), GENERIC_READ, FILE_SHARE_READ, nil,
+    OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, 0);
+  if ClientFile = INVALID_HANDLE_VALUE then
+    raise Exception.Create('Mabinogi Client.exe could not be opened: ' + SysErrorMessage(GetLastError));
+  PrivateTicket := nil;
+  ShimReadyEv := 0;
+  ZeroMemory(@GamePI, SizeOf(GamePI));
+  try
+  RefuseLink(ClientFile, GameExePath);
+  if not IsNexonSignedClient(GameExePath, ClientFile, Refusal) then
+    raise Exception.Create('Launch refused: ' + Refusal + '. Repair the game through Nexon Launcher.');
 
   // 2. Auth: /account → /access → /playable → /passport (official launcher sequence).
   // /account returns Set-Cookie headers that establish the server-side session scope.
@@ -199,19 +324,16 @@ begin
   Hashed := HashUserNo(UserNo);
   LaunchLog('Launch ticket received');
 
-  PrivateTicket := nil;
-  ShimReadyEv := 0;
-  ZeroMemory(@GamePI, SizeOf(GamePI));
-  try
   try
   PrivateTicket := TPrivateTicket.Create(Ticket);
 
-  // 4. Deploy stub as nexon_client.exe in our dir
+  // 4. Deploy stub as nexon_client.exe in our dir (verified copy, held locked)
+  FOurDirLock := LockFolder(OurDir);
   StubSrc := OurDir + '\nxl3p_stub.exe';
   StubDst := OurDir + '\nexon_client.exe';
   if not TFile.Exists(StubSrc) then
     raise Exception.CreateFmt('nxl3p_stub.exe not found: %s', [StubSrc]);
-  TFile.Copy(StubSrc, StubDst, True);
+  FStubFile := DeployVerified(StubSrc, StubDst);
   FStubPath := StubDst;
   LaunchLog('Stub deployed: ' + StubDst);
 
@@ -266,7 +388,8 @@ begin
   if not TFile.Exists(ShimSrc) then
     raise Exception.Create('nxl3p_shim.dll not found next to launcher. Rebuild the shim.');
   TDirectory.CreateDirectory(BinDir);
-  TFile.Copy(ShimSrc, ShimDst, True);
+  FBinDirLock := LockFolder(BinDir); // refuses a junction in place of bin\
+  FShimFile := DeployVerified(ShimSrc, ShimDst);
   FShimPath := ShimDst;
   LaunchLog('Shim deployed: ' + ShimDst);
 
@@ -285,39 +408,12 @@ begin
   UniqueString(CL);
   if not CreateProcessW(PWideChar(GameExePath), PWideChar(CL), nil, nil, False,
     CREATE_SUSPENDED or CREATE_UNICODE_ENVIRONMENT, PWideChar(ChildEnvironment),
-    PWideChar(GameDir), SI, GamePI) then
-  begin
-    ErrorCode := GetLastError;
-    if ErrorCode <> ERROR_ELEVATION_REQUIRED then RaiseLastOSError(ErrorCode);
-    // Game requests elevation; ShellExecuteEx handles UAC and the child
-    // inherits TICKET_ENV from our process — no suspended start in this path.
-    LaunchLog('CreateProcessW: ERROR_ELEVATION_REQUIRED, falling back to ShellExecuteEx');
-    // UAC elevation breaks env var inheritance (child spawned by AppInfo, not by us).
-    // Append the mapping name to the command line; the shim parses --rua-map as fallback.
-    ParamStr := ParamStr + ' --rua-map ' + PrivateTicket.Name;
-    ZeroMemory(@SEI, SizeOf(SEI));
-    SEI.cbSize       := SizeOf(SEI);
-    SEI.fMask        := SEE_MASK_NOCLOSEPROCESS;
-    SEI.lpFile       := PChar(GameExePath);
-    SEI.lpParameters := PChar(ParamStr);
-    SEI.lpDirectory  := PChar(GameDir);
-    SEI.nShow        := SW_SHOWNORMAL;
-    if not ShellExecuteEx(@SEI) then RaiseLastOSError;
-    GamePI.hProcess := SEI.hProcess;
-    GamePI.hThread  := 0;
-    StopPipe;
-    FPipeThread := TPipeServerThread.Create(Ticket, Hashed, ProductId, GamePI.hProcess);
-    FPipeThread.Start;
-  end
-  else
-  begin
-    // Suspended path: pipe is authorized to the exact PID before the first game instruction.
-    StopPipe;
-    FPipeThread := TPipeServerThread.Create(Ticket, Hashed, ProductId, GamePI.hProcess);
-    FPipeThread.Start;
-    if ResumeThread(GamePI.hThread) = DWORD(-1) then RaiseLastOSError;
-    CloseHandle(GamePI.hThread); GamePI.hThread := 0;
-  end;
+    PWideChar(GameDir), SI, GamePI) then RaiseLastOSError;
+  StopPipe;
+  FPipeThread := TPipeServerThread.Create(Ticket, Hashed, ProductId, GamePI.hProcess);
+  FPipeThread.Start;
+  if ResumeThread(GamePI.hThread) = DWORD(-1) then RaiseLastOSError;
+  CloseHandle(GamePI.hThread); GamePI.hThread := 0;
   if WaitForSingleObject(ShimReadyEv, 30000) <> WAIT_OBJECT_0 then
     raise Exception.Create('Secure game initialization timed out');
   FreeAndNil(PrivateTicket);
@@ -329,6 +425,10 @@ begin
   var TKillEvent   := FStubExitEvent; FStubExitEvent := 0;
   var TKillPath    := FStubPath;      FStubPath      := '';
   var TKillShim    := FShimPath;      FShimPath      := '';
+  var TStubFile    := FStubFile;      FStubFile      := 0;
+  var TShimFile    := FShimFile;      FShimFile      := 0;
+  var TBinLock     := FBinDirLock;    FBinDirLock    := 0;
+  var TDirLock     := FOurDirLock;    FOurDirLock    := 0;
   var TGameProc    := GamePI.hProcess;
 
   TThread.CreateAnonymousThread(procedure
@@ -345,8 +445,13 @@ begin
 
     if TKillEvent <> 0 then begin SetEvent(TKillEvent); Sleep(200); CloseHandle(TKillEvent); end;
     if TKillProc <> 0 then begin if WaitForSingleObject(TKillProc, 2000) = WAIT_TIMEOUT then TerminateProcess(TKillProc, 0); WaitForSingleObject(TKillProc, 2000); CloseHandle(TKillProc); end;
+    // Release the locks only now, after the game and stub have finished with them.
+    CloseIfOpen(TStubFile);
+    CloseIfOpen(TShimFile);
     try if TKillPath <> '' then TFile.Delete(TKillPath); except end;
     try if TKillShim <> '' then TFile.Delete(TKillShim); except end;
+    CloseIfOpen(TBinLock);
+    CloseIfOpen(TDirLock);
     LaunchLog('Cleanup done');
 
     FGameRunning := False;
@@ -370,6 +475,7 @@ begin
   finally
     PrivateTicket.Free;
     if ShimReadyEv <> 0 then CloseHandle(ShimReadyEv);
+    CloseIfOpen(ClientFile); // the started game holds its own image mapping
   end;
 end;
 

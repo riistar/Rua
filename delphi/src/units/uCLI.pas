@@ -43,7 +43,7 @@ uses
   Winapi.Windows,
   System.SysUtils, System.IOUtils, System.Classes, System.SyncObjs, System.StrUtils,
   uProfiles, uDeviceId, uNexonAPI, uNxlPatcher, uGameLaunch,
-  uBrowserCookies, uIgnoreList, uHooks;
+  uCookieUtil, uIgnoreList, uHooks;
 
 const
   EXITCODE_OK     = 0;
@@ -96,6 +96,27 @@ begin
     if SameText(ParamStr(I), K) then
       Exit(ParamStr(I + 1));
   Result := Default;
+end;
+
+// One UTF-8 line from the standard-input handle (Rua is a GUI-subsystem
+// program, so the Pascal Input file is not used).
+function ReadStdInLine: string;
+var
+  H: THandle;
+  B: AnsiChar;
+  N: DWORD;
+  S: RawByteString;
+begin
+  Result := '';
+  H := GetStdHandle(STD_INPUT_HANDLE);
+  if (H = 0) or (H = INVALID_HANDLE_VALUE) then Exit;
+  S := '';
+  while ReadFile(H, B, 1, N, nil) and (N = 1) do
+  begin
+    if B = #10 then Break;
+    if B <> #13 then S := S + B;
+  end;
+  Result := UTF8ToString(S);
 end;
 
 function HasFlag(const Key: string): Boolean;
@@ -151,6 +172,12 @@ begin
   ProfileName := GetArg('profile');
   Email       := GetArg('email');
   Password    := GetArg('password');
+  // A command-line password is visible to other programs on this PC; reading it
+  // from standard input is not.
+  if Password <> '' then
+    ConErr('Warning: --password is visible to other programs. Prefer --password-stdin.')
+  else if HasFlag('password-stdin') then
+    Password := ReadStdInLine;
 
   if (Email <> '') and (Password <> '') then
   begin
@@ -276,13 +303,14 @@ begin
     end;
   end;
 
+  // Never print session cookies: console output can be logged or captured.
   if Prof.Name <> '' then
   begin
     AddOrUpdateProfile(Prof, Cookies);
     UpdateNxLExpiry(Prof.Name, LastNxLExpiry);
   end
   else
-    ConLn('Cookies: ' + Cookies);
+    ConErr('Session not saved. Run again with --profile NAME to store it securely.');
 
   ConLn('Login OK: ' + IfThen(Prof.Name <> '', Prof.Name, '(profile not saved)'));
   Result := EXITCODE_OK;

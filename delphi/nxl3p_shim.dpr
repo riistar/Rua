@@ -29,25 +29,11 @@ var
 
 // --------------------------------------------------------------------------
 
+// Release builds do not log. The shim runs inside the elevated game process,
+// and appending to a fixed name in the user-writable %TEMP% would let a planted
+// link redirect an administrator-level write. Calls are kept as markers.
 procedure ShimLog(const Msg: PAnsiChar);
-var
-  TempDir: array[0..MAX_PATH] of WideChar;
-  LogPath: array[0..MAX_PATH + 32] of WideChar;
-  hFile:   THandle;
-  Written: DWORD;
-  Len:     DWORD;
 begin
-  GetTempPathW(MAX_PATH, @TempDir[0]);
-  lstrcpyW(@LogPath[0], @TempDir[0]);
-  lstrcatW(@LogPath[0], 'nxl3p_shim_debug.txt');
-  hFile := CreateFileW(@LogPath[0], GENERIC_WRITE, FILE_SHARE_READ, nil,
-    OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
-  if hFile = INVALID_HANDLE_VALUE then Exit;
-  SetFilePointer(hFile, 0, nil, FILE_END);
-  Len := lstrlenA(Msg);
-  WriteFile(hFile, Msg^, Len, Written, nil);
-  WriteFile(hFile, PAnsiChar(#13#10)^, 2, Written, nil);
-  CloseHandle(hFile);
 end;
 
 // --------------------------------------------------------------------------
@@ -99,9 +85,8 @@ end;
 // 0xbeef0001  called from nxapi2_init(*param_1) during game startup
 function ShimInit(Param: UInt64): Integer; stdcall;
 var
-  Ticket, MappingName, ElevCL: string;
+  Ticket, MappingName: string;
   ReadyEv: THandle;
-  ElevPos, ElevSP: Integer;
 begin
   ShimLog('ShimInit called');
   Result   := 0; // 0 = success per nxapi2_init convention
@@ -114,17 +99,6 @@ begin
     UInt64ToWide(10200, @GProductIdStr[0], Length(GProductIdStr));
 
   MappingName := GetEnvironmentVariable(TICKET_ENV);
-  if MappingName = '' then begin
-    // Elevated launch: UAC breaks env var inheritance; launcher appends --rua-map <name>
-    ElevCL  := GetCommandLineW;
-    ElevPos := Pos('--rua-map ', ElevCL);
-    if ElevPos > 0 then begin
-      MappingName := Copy(ElevCL, ElevPos + 10, MaxInt);
-      ElevSP := Pos(' ', MappingName);
-      if ElevSP > 0 then SetLength(MappingName, ElevSP - 1);
-      SetEnvironmentVariableW(PWideChar(TICKET_ENV), PWideChar(MappingName));
-    end;
-  end;
   if ReadPrivateTicket(Ticket) then begin
     WideAssign(@GTicket[0], Length(GTicket), PWideChar(Ticket));
     GInitOK := True;

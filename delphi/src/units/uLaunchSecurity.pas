@@ -5,7 +5,7 @@ interface
 uses Winapi.Windows, System.SysUtils;
 
 const
-  TICKET_ENV = 'MOONCREST_RUA_TICKET_MAP';
+  TICKET_ENV = 'RUA_TICKET_MAP';
   TICKET_CAPACITY = 4096;
 
 type
@@ -50,6 +50,7 @@ var
   Buffer: TBytes;
   SidText: PWideChar;
   Sddl: string;
+  Elevation: DWORD;
 begin
   Result := nil;
   Token := 0;
@@ -64,6 +65,12 @@ begin
     if not ConvertSidToStringSidW(PSIDAndAttributes(@Buffer[0])^.Sid, SidText) then RaiseLastOSError;
     try
       Sddl := 'D:P(A;;GA;;;SY)(A;;GA;;;' + string(SidText) + ')';
+      // Elevated launch: label objects high-integrity so non-elevated code
+      // running as the same user cannot read, write or execute them. Every
+      // participant (Rua, the game, its shim and the stub) runs elevated.
+      Elevation := 0;
+      if GetTokenInformation(Token, TokenElevation, @Elevation, SizeOf(Elevation), Needed) and (Elevation <> 0) then
+        Sddl := Sddl + 'S:(ML;;NWNRNX;;;HI)';
       if not ConvertStringSecurityDescriptorToSecurityDescriptorW(PWideChar(Sddl), 1, Result, nil) then RaiseLastOSError;
     finally
       LocalFree(HLOCAL(SidText));

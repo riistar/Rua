@@ -65,7 +65,11 @@ var
   i:      Integer;
 begin
   Result := '';
-  Output := RunCommandOutput('wmic csproduct get uuid');
+  // Full System32 path: a bare 'wmic' is searched in the application folder,
+  // current directory and PATH first. Same tool and output as before.
+  var SysDir: array[0..MAX_PATH] of Char;
+  if GetSystemDirectory(@SysDir[0], MAX_PATH) = 0 then Exit;
+  Output := RunCommandOutput('"' + string(PChar(@SysDir[0])) + '\wbem\wmic.exe" csproduct get uuid');
   // Find 8-4-4-4-12 hex UUID pattern
   for i := 1 to Length(Output) - 35 do
     if (Length(Output) >= i + 35) and

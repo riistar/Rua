@@ -3,7 +3,7 @@
         <ProjectGuid>{D358D0B4-64C2-40C7-ADA8-4C1C9D63A476}</ProjectGuid>
         <MainSource>nxl3p_shim.dpr</MainSource>
         <Base>True</Base>
-        <Config Condition="'$(Config)'==''">Debug</Config>
+        <Config Condition="'$(Config)'==''">Release</Config>
         <ProjectName Condition="'$(ProjectName)'==''">nxl3p_shim</ProjectName>
         <TargetedPlatforms>3</TargetedPlatforms>
         <AppType>Library</AppType>
@@ -82,9 +82,6 @@
         <DCC_RangeChecking>true</DCC_RangeChecking>
         <DCC_IntegerOverflowCheck>true</DCC_IntegerOverflowCheck>
     </PropertyGroup>
-    <PropertyGroup Condition="'$(Cfg_2)'!=''">
-        <DCC_ExeOutput>.\build\$(Platform)\$(Config)</DCC_ExeOutput>
-    </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_2_Win32)'!=''">
         <DCC_ExeOutput>.\build\$(Platform)\$(Config)</DCC_ExeOutput>
         <DCC_BplOutput>.\build\$(Platform)\$(Config)\DCU</DCC_BplOutput>
@@ -98,6 +95,7 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="src\units\uLaunchSecurity.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

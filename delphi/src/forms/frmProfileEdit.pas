@@ -47,7 +47,7 @@ implementation
 {$R *.dfm}
 
 uses
-  frmLoginWebView, uNexonAPI, uBrowserCookies, System.DateUtils, System.JSON,
+  frmLoginWebView, uNexonAPI, uCookieUtil, System.DateUtils, System.JSON,
   System.Net.HttpClient, System.Net.URLClient;
 
 class function TFormProfileEdit.Execute(

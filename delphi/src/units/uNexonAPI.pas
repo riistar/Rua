@@ -349,25 +349,91 @@ begin
   end;
 end;
 
+// The game version id must arrive over authenticated HTTPS from Nexon. If that
+// is not possible, updating is refused with an explanation rather than falling
+// back to plain HTTP. The id names a content-addressed manifest that the patcher
+// verifies by SHA1, so a valid id is enough to authenticate the whole update.
+function SecureManifestUrl(const Url: string): string;
+const
+  DISABLED = 'Secure game updating is unavailable: Nexon returned a version address that is not an HTTPS Nexon server (%s). ' +
+             'Updating through Rua is disabled; use Nexon Launcher to update the game.';
+var
+  U:    TURI;
+  Host: string;
+begin
+  try
+    U := TURI.Create(Trim(Url));
+  except
+    raise EUpdateCheckError.CreateFmt(DISABLED, [Url]);
+  end;
+  // Nexon publishes this address as http://; request the same resource over TLS.
+  if SameText(U.Scheme, 'http') then U.Scheme := 'https';
+  Host := LowerCase(U.Host);
+  if not SameText(U.Scheme, 'https') or (U.Username <> '') or
+     not ((Host = 'nexon.net') or Host.EndsWith('.nexon.net') or
+          (Host = 'nexon.com') or Host.EndsWith('.nexon.com')) then
+    raise EUpdateCheckError.CreateFmt(DISABLED, [Url]);
+  if (U.Port <> 443) and (U.Port <> 80) and (U.Port <> 0) and (U.Port <> -1) then
+    raise EUpdateCheckError.CreateFmt(DISABLED, [Url]);
+  U.Port := 443;
+  Result := U.ToString;
+end;
+
 function FetchManifestHash(const Cookies: string; ProductId: Integer): string;
+const
+  UNAVAILABLE = 'Secure game updating is unavailable: Nexon''s version file could not be retrieved over HTTPS (%s). ' +
+                'Updating through Rua is disabled until it can be; use Nexon Launcher to update the game.';
 var
   Branch: TBranchInfo;
   Http:   THTTPClient;
   Resp:   IHTTPResponse;
+  Url:    string;
 begin
   Branch := FetchBranchInfo(Cookies, ProductId);
-  Result := Branch.ManifestUrl;
-  if Result = '' then Exit;
+  if Branch.ManifestUrl = '' then
+    raise EUpdateCheckError.Create('Nexon did not return a game version for this account. Use Nexon Launcher to update the game.');
+  Url := SecureManifestUrl(Branch.ManifestUrl);
 
   // Manifest hash URL contains the actual PAK manifest filename — fetch it.
   Http := THTTPClient.Create;
   try
-    Resp := Http.Get(Result);
-    if Resp.StatusCode = 200 then
-      Result := Trim(Resp.ContentAsString);
+    Http.SecureProtocols := [THTTPSecureProtocol.TLS12, THTTPSecureProtocol.TLS13];
+    // Follow redirects here, revalidating each hop, so none can leave HTTPS Nexon hosts.
+    Http.HandleRedirects := False;
+    for var Hop := 0 to 3 do
+    begin
+      try
+        Resp := Http.Get(Url);
+      except
+        on E: Exception do
+          raise EUpdateCheckError.CreateFmt(UNAVAILABLE, [E.Message]);
+      end;
+      case Resp.StatusCode of
+        301, 302, 303, 307, 308:
+          if Hop < 3 then
+          begin
+            var Location := Resp.HeaderValue['Location'];
+            if Location = '' then
+              raise EUpdateCheckError.CreateFmt(UNAVAILABLE, ['redirect without a location']);
+            if Pos('://', Location) = 0 then
+              Location := TURI.PathRelativeToAbs(Location, TURI.Create(Url));
+            Url := SecureManifestUrl(Location);
+            Continue;
+          end;
+      end;
+      Break;
+    end;
+    if Resp.StatusCode <> 200 then
+      raise EUpdateCheckError.CreateFmt(UNAVAILABLE, ['HTTP ' + IntToStr(Resp.StatusCode)]);
+    Result := LowerCase(Trim(Resp.ContentAsString));
   finally
     Http.Free;
   end;
+  var ValidId := Length(Result) = 40;
+  for var C in Result do
+    if not CharInSet(C, ['0'..'9', 'a'..'f']) then ValidId := False;
+  if not ValidId then
+    raise EUpdateCheckError.Create('Nexon returned an invalid game version id. Game updating through Rua is disabled; use Nexon Launcher.');
 end;
 
 function ParseAuthCookies(const Resp: IHTTPResponse;

@@ -16,12 +16,14 @@ type
 
 function  LoadHooks: TRuaHooks;
 procedure SaveHooks(const H: TRuaHooks);
-function RunHookCmd(const Cmd: string; const ProfileName: string = ''): Boolean;
+procedure RunHookCmd(const Cmd: string; const ProfileName: string = '');
+// True when this process runs with an elevated (administrator) token.
+function IsProcessElevated: Boolean;
 
 implementation
 
 uses
-  Winapi.Windows, Winapi.ShellAPI, System.SysUtils, System.IOUtils, IniFiles;
+  Winapi.Windows, System.SysUtils, System.IOUtils, IniFiles;
 
 function HooksConfigPath: string;
 begin
@@ -59,53 +61,45 @@ begin
   end;
 end;
 
-procedure SplitCmd(const C: string; out ExePath, Params: string);
+function IsProcessElevated: Boolean;
 var
-  P: Integer;
+  Token:    THandle;
+  Elevated: DWORD;
+  Len:      DWORD;
 begin
-  if (Length(C) > 0) and (C[1] = '"') then
-  begin
-    P := Pos('"', C, 2);
-    if P > 0 then
-    begin
-      ExePath := Copy(C, 2, P - 2);
-      Params  := Trim(Copy(C, P + 1, MaxInt));
-    end
-    else
-      ExePath := C;
-  end
-  else
-  begin
-    P := Pos(' ', C);
-    if P > 0 then
-    begin
-      ExePath := Copy(C, 1, P - 1);
-      Params  := Trim(Copy(C, P + 1, MaxInt));
-    end
-    else
-      ExePath := C;
+  Result := False;
+  if not OpenProcessToken(GetCurrentProcess, TOKEN_QUERY, Token) then Exit;
+  try
+    Elevated := 0;
+    if GetTokenInformation(Token, TokenElevation, @Elevated, SizeOf(Elevated), Len) then
+      Result := Elevated <> 0;
+  finally
+    CloseHandle(Token);
   end;
 end;
 
-function RunHookCmd(const Cmd: string; const ProfileName: string = ''): Boolean;
+procedure RunHookCmd(const Cmd: string; const ProfileName: string = '');
 var
-  C, ExePath, Params: string;
-  Info: TShellExecuteInfo;
+  SI: TStartupInfo;
+  PI: TProcessInformation;
+  C:  string;
 begin
-  Result := False;
   C := Trim(Cmd);
   if C = '' then Exit;
+  // Hooks come from the user-writable %APPDATA%\Rua\config.ini. Running them
+  // from an elevated Rua would hand administrator rights to whatever wrote that
+  // file, so elevated sessions never run hooks.
+  if IsProcessElevated then Exit;
   C := StringReplace(C, '%PROFILE%', ProfileName, [rfReplaceAll, rfIgnoreCase]);
-  SplitCmd(C, ExePath, Params);
-  FillChar(Info, SizeOf(Info), 0);
-  Info.cbSize       := SizeOf(Info);
-  Info.fMask        := SEE_MASK_NOCLOSEPROCESS;
-  Info.lpFile       := PChar(ExePath);
-  Info.lpParameters := PChar(Params);
-  Info.nShow        := SW_SHOWNORMAL;
-  Result := ShellExecuteExW(@Info);
-  if Result and (Info.hProcess <> 0) then
-    CloseHandle(Info.hProcess); // fire-and-forget
+  FillChar(SI, SizeOf(SI), 0);
+  SI.cb := SizeOf(SI);
+  FillChar(PI, SizeOf(PI), 0);
+  if CreateProcessW(nil, PChar(C), nil, nil, False,
+       CREATE_NO_WINDOW, nil, nil, SI, PI) then
+  begin
+    CloseHandle(PI.hThread);
+    CloseHandle(PI.hProcess); // fire-and-forget
+  end;
 end;
 
 end.

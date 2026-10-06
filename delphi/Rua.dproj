@@ -3,7 +3,7 @@
         <ProjectGuid>{E9ED9299-7D74-4373-842B-37D8838B3BAA}</ProjectGuid>
         <MainSource>Rua.dpr</MainSource>
         <Base>True</Base>
-        <Config Condition="'$(Config)'==''">Debug</Config>
+        <Config Condition="'$(Config)'==''">Release</Config>
         <ProjectName Condition="'$(ProjectName)'==''">Rua</ProjectName>
         <TargetedPlatforms>3</TargetedPlatforms>
         <AppType>Application</AppType>
@@ -134,11 +134,9 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="src\units\uCLI.pas"/>
         <DCCReference Include="src\forms\frmMain.pas">
             <Form>FormMain</Form>
-        </DCCReference>
-        <DCCReference Include="src\forms\frmLogin.pas">
-            <Form>FormLogin</Form>
         </DCCReference>
         <DCCReference Include="src\forms\frmLoginWebView.pas">
             <Form>FormLoginWebView</Form>
@@ -159,13 +157,14 @@
         <DCCReference Include="src\units\uNexonAPI.pas"/>
         <DCCReference Include="src\units\uDeviceId.pas"/>
         <DCCReference Include="src\units\uGameLaunch.pas"/>
-        <DCCReference Include="src\units\uBrowserCookies.pas"/>
+        <DCCReference Include="src\units\uCookieUtil.pas"/>
+        <DCCReference Include="src\units\uSignature.pas"/>
         <DCCReference Include="src\units\uNxlPatcher.pas"/>
+        <DCCReference Include="src\units\uHooks.pas"/>
         <DCCReference Include="src\units\uLoginBrowser.pas"/>
         <DCCReference Include="src\units\uLoginBrowserWV.pas"/>
         <DCCReference Include="src\units\uLoginBrowserCEF.pas"/>
         <DCCReference Include="src\units\uCefRuntime.pas"/>
-        <DCCReference Include="src\units\uHeaderPageControl.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

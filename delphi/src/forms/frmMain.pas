@@ -109,7 +109,6 @@ type
     FSessionStart:    TDateTime; // when the game client was launched (for playtime)
     FSessionProfile:  string;   // profile used by the running session
     FSessionTimer:    TTimer;   // live session-time ticker
-    FTokenTimer:      TTimer;   // 60s ticker that refreshes Token Expires column
     FCleanupOnExit:   Boolean;
     FInRefreshProfiles: Boolean; // suppress session check during auto-select
     FNewsLoaded: Boolean;        // feed loaded once, from FormShow (after form is themed/drawn)
@@ -145,8 +144,6 @@ type
     procedure GameExitHandler(Sender: TObject);
     function  SessionTextFor(const Profile: string): string;
     procedure SessionTimerTick(Sender: TObject);
-    function  TokenExpiryTextFor(const ProfileName: string): string;
-    procedure TokenTimerTick(Sender: TObject);
     procedure WMSysCommand(var Msg: TMessage); message WM_SYSCOMMAND;
     procedure MenuForceAllClick(Sender: TObject);
     procedure DoCheckAndUpdate(AutoMode: Boolean; ForceAll: Boolean = False; VerifyMode: Boolean = False);
@@ -170,8 +167,8 @@ implementation
 
 uses
   Vcl.FileCtrl, Vcl.Themes, Winapi.ShellAPI, System.Win.Registry,
-  frmLogin, frmLoginWebView, frmProfile, frmProfileEdit, frmSettings, frmFolderSelect, frmUpdateSelect,
-  uBrowserCookies, uNxlPatcher, uCredStore, uLoginBrowser, uHooks;
+  frmLoginWebView, frmProfile, frmProfileEdit, frmSettings, frmFolderSelect, frmUpdateSelect,
+  uCookieUtil, uNxlPatcher, uCredStore, uLoginBrowser, uHooks;
 
 const
   DEFAULT_PRODUCT = 10200; // Mabinogi
@@ -225,10 +222,7 @@ begin
   begin
     try
       if Enable then
-      begin
-        var Val := '"' + ParamStr(0) + '" --minimized';
-        RegSetValueEx(RKey, 'Rua', 0, REG_SZ, PByte(Val), (Length(Val) + 1) * 2);
-      end
+        RegSetValueEx(RKey, 'Rua', 0, REG_SZ, PByte(ParamStr(0)), (Length(ParamStr(0)) + 1) * 2)
       else
         RegDeleteValue(RKey, 'Rua');
     finally
@@ -535,13 +529,7 @@ begin
   FSessionTimer.Enabled    := False;
   FSessionTimer.OnTimer    := SessionTimerTick;
 
-  // Token expiry ticker: refreshes the "Token" column every 60s.
-  FTokenTimer            := TTimer.Create(Self);
-  FTokenTimer.Interval   := 60000;
-  FTokenTimer.Enabled    := True;
-  FTokenTimer.OnTimer    := TokenTimerTick;
-
-  // Rebuild columns: status icon | Profile | UserNo | Last Used | Session | Token
+  // Rebuild columns: status icon | Profile | UserNo | Last Used | Session
   LvProfiles.SmallImages := ImageList1;
   LvProfiles.Columns.Clear;
   SC := LvProfiles.Columns.Add; SC.Caption := '';          SC.Width := 24;
@@ -549,7 +537,6 @@ begin
   SC := LvProfiles.Columns.Add; SC.Caption := 'User No';   SC.Width := 0;
   SC := LvProfiles.Columns.Add; SC.Caption := 'Last Used'; SC.Width := 68;
   SC := LvProfiles.Columns.Add; SC.Caption := 'Session';   SC.Width := 62;
-  SC := LvProfiles.Columns.Add; SC.Caption := 'Token';     SC.Width := 62;
 
   // Tray icon + menu
   var MI: TMenuItem;
@@ -601,7 +588,6 @@ begin
   LoadConfig;        // applies the saved Vcl theme
   if Trim(FDefaultGameExe) = '' then
     AutoDetectGame;
-  if FindCmdLineSwitch('minimized') then FStartMinimized := True;
   SetAutoStart(FAutoStart);
   if FAutoCheck then
     DoCheckAndUpdate(True);
@@ -786,8 +772,6 @@ begin
         Item.SubItems.Add('Never'); // col 3: Last Used
       // col 4: Session time (live; updated by the session timer)
       Item.SubItems.Add(SessionTextFor(P.Name));
-      // col 5: Token expiry countdown (live; updated by the token timer)
-      Item.SubItems.Add(TokenExpiryTextFor(P.Name));
     end;
   finally
     LvProfiles.Items.EndUpdate;
@@ -797,7 +781,6 @@ begin
   LvProfiles.Columns[2].Width := 0;  // UserNo — hidden, kept in data
   LvProfiles.Columns[3].Width := -2; // Last Used: LVSCW_AUTOSIZE_USEHEADER
   LvProfiles.Columns[4].Width := 62; // Session
-  LvProfiles.Columns[5].Width := 66; // Token
 
   // Auto-select last used profile (or top item) silently
   FInRefreshProfiles := True;
@@ -892,7 +875,6 @@ begin
   P.LastUsed := 0;
 
   AddOrUpdateProfile(P, Cookies);
-  UpdateNxLExpiry(P.Name, LastNxLExpiry);
   Log('Profile saved: ' + Name);
   // Debug: show which session keys were captured
   begin
@@ -1200,7 +1182,6 @@ begin
     if Profs[I].Name = Profile then
     begin
       AddOrUpdateProfile(Profs[I], Merged);
-      UpdateNxLExpiry(Profile, LastNxLExpiry);
       Break;
     end;
 end;
@@ -1226,8 +1207,6 @@ var
   NxLSess, DevId:     string;
   Refreshed:          string;
   AllProfs:           TArray<TNexonProfile>;
-  NxLExpiry:          TDateTime;
-  StoredExpiry:       TDateTime;
 begin
   Result := False;
 
@@ -1242,42 +1221,22 @@ begin
   LogMsg(Format('Session expired (HTTP %d%s) — trying refresh.', [Status, Reason]));
 
   // 2. Autologin refresh (email/password accounts; TPA returns error 20182 → skip to step 3).
-  NxLSess      := ExtractCookieValue(Cookies, 'NxLSession');
-  DevId        := '';
-  StoredExpiry := 0;
+  NxLSess := ExtractCookieValue(Cookies, 'NxLSession');
+  DevId   := '';
   AllProfs := LoadProfiles;
   for var P in AllProfs do
-    if P.Name = Profile then
-    begin
-      DevId        := P.DeviceId;
-      StoredExpiry := P.NxLExpiry;
-      Break;
-    end;
-
-  // Skip autologin if NxLSession is known-expired; avoids a pointless network round-trip.
-  if (StoredExpiry > 0) and (StoredExpiry < Now) then
-  begin
-    LogMsg(Format('NxLSession expired %s — need full re-login.',
-      [FormatDateTime('yyyy-mm-dd hh:nn', StoredExpiry)]));
-    Exit(False);
-  end;
+    if P.Name = Profile then begin DevId := P.DeviceId; Break; end;
 
   if (NxLSess <> '') and (DevId <> '') then
   begin
     LogMsg('Trying autologin refresh...');
     Status    := 0;
-    NxLExpiry := 0;
-    Refreshed := AutoLoginRefresh(NxLSess, DevId, Status, NxLExpiry);
+    Refreshed := AutoLoginRefresh(NxLSess, DevId, Status);
     if Refreshed <> '' then
     begin
       SaveRefreshedCookies(Profile, Refreshed);
       Cookies := Refreshed;
-      if NxLExpiry > 0 then
-        UpdateNxLExpiry(Profile, NxLExpiry);
       LogMsg('AToken refreshed via autologin.');
-      if NxLExpiry > 0 then
-        LogMsg(Format('NxLSession valid until %s.',
-          [FormatDateTime('yyyy-mm-dd hh:nn', NxLExpiry)]));
       Exit(True);
     end;
     LogMsg(Format('Autologin failed (HTTP %d).', [Status]));
@@ -1461,9 +1420,7 @@ begin
       if (Length(UpdateRoots) > 0) and not HookFired then
       begin
         HookFired := True;
-        TThread.Queue(nil, procedure begin Log('Hook [BeforePatch]: ' + CapBeforePatch); end);
-        if not RunHookCmd(CapBeforePatch, CapProfile) then
-          TThread.Queue(nil, procedure begin Log('Hook [BeforePatch] failed to start.'); end);
+        RunHookCmd(CapBeforePatch, CapProfile);
       end;
 
       for InstRoot in UpdateRoots do
@@ -1497,13 +1454,13 @@ begin
             OldManifest := '';
             if not (VerifyMode or ForceAll) then
             begin
-              var HF := TPath.Combine(R, 'patchdata' + IntToStr(ProductId) + '.manifest.hash');
+              var HF := TPath.Combine(R, 'patchdata\' + IntToStr(ProductId) + '.manifest.hash');
               if TFile.Exists(HF) then
               begin
-                var LH := Trim(TFile.ReadAllText(HF));
-                if (LH <> '') and (LH <> RemoteHash) then
+                var LH := LowerCase(Trim(TFile.ReadAllText(HF)));
+                if IsSha1Hex(LH) and (LH <> RemoteHash) then
                   OldManifest := LoadCachedManifest(
-                    TPath.Combine(R, 'patchdata' + LH + '.manifest.json'));
+                    TPath.Combine(R, 'patchdata\' + LH + '.manifest.json'));
               end;
             end;
 
@@ -1587,12 +1544,8 @@ begin
       end; // for InstRoot in UpdateRoots
 
       // Fire AfterPatch once all roots have been processed (no error path).
-      if HookFired and (CapAfterPatch <> '') then
-      begin
-        TThread.Queue(nil, procedure begin Log('Hook [AfterPatch]: ' + CapAfterPatch); end);
-        if not RunHookCmd(CapAfterPatch, CapProfile) then
-          TThread.Queue(nil, procedure begin Log('Hook [AfterPatch] failed to start.'); end);
-      end;
+      if HookFired then
+        RunHookCmd(CapAfterPatch, CapProfile);
     except
       on E: Exception do Error := E.Message;
     end;
@@ -1612,10 +1565,11 @@ begin
       begin
         BtnCheckUpdate.Caption := 'Check for Updates';
         if FCancelDownload then
-          Log('Download cancelled.')
-        else if Error <> '' then
-          Log('Update ERROR: ' + Error);
+          Log('Download cancelled.');
       end;
+      // A failed or refused secure update must always be visible.
+      if (Error <> '') and not FCancelDownload then
+        Log('Update ERROR: ' + Error);
       UpdateButtons;
       if FCleanupOnExit then
       begin
@@ -1704,62 +1658,6 @@ begin
   end;
 end;
 
-// Format time remaining until Expiry: "29d 4h", "2h 15m", "45m", "Expired", "—".
-function FormatTokenExpiry(const Expiry: TDateTime): string;
-var
-  SecsLeft:          Int64;
-  Days, Hours, Mins: Integer;
-begin
-  if Expiry = 0 then Exit('—');
-  SecsLeft := Round((Expiry - Now) * SecsPerDay);
-  if SecsLeft <= 0 then Exit('Expired');
-  Days  := SecsLeft div 86400;
-  Hours := (SecsLeft mod 86400) div 3600;
-  Mins  := (SecsLeft mod 3600) div 60;
-  if Days > 0 then
-    Result := Format('%dd %dh', [Days, Hours])
-  else if Hours > 0 then
-    Result := Format('%dh %dm', [Hours, Mins])
-  else
-    Result := Format('%dm', [Mins]);
-end;
-
-function TFormMain.TokenExpiryTextFor(const ProfileName: string): string;
-var
-  Profiles: TArray<TNexonProfile>;
-  I:        Integer;
-begin
-  Profiles := LoadProfiles;
-  for I := 0 to High(Profiles) do
-    if Profiles[I].Name = ProfileName then Exit(FormatTokenExpiry(Profiles[I].NxLExpiry));
-  Result := '—';
-end;
-
-// Refresh Token column every 60s without triggering a full RefreshProfiles.
-procedure TFormMain.TokenTimerTick(Sender: TObject);
-var
-  I:        Integer;
-  J:        Integer;
-  Profiles: TArray<TNexonProfile>;
-  Expiry:   TDateTime;
-  ProfName: string;
-begin
-  Profiles := LoadProfiles;
-  LvProfiles.Items.BeginUpdate;
-  try
-    for I := 0 to LvProfiles.Items.Count - 1 do
-    begin
-      Expiry   := 0;
-      ProfName := LvProfiles.Items[I].SubItems[0];
-      for J := 0 to High(Profiles) do
-        if Profiles[J].Name = ProfName then begin Expiry := Profiles[J].NxLExpiry; Break; end;
-      LvProfiles.Items[I].SubItems[4] := FormatTokenExpiry(Expiry);
-    end;
-  finally
-    LvProfiles.Items.EndUpdate;
-  end;
-end;
-
 procedure TFormMain.GameExitHandler(Sender: TObject);
 var
   Elapsed:        TDateTime;
@@ -1784,13 +1682,7 @@ begin
     Log('Game exited.');
     StatusBar.SimpleText := 'Game exited.';
   end;
-  var AHook := LoadHooks.AfterLaunch;
-  if AHook <> '' then
-  begin
-    Log('Hook [AfterLaunch]: ' + AHook);
-    if not RunHookCmd(AHook, ExitedProfile) then
-      Log('Hook [AfterLaunch] failed to start (error ' + IntToStr(GetLastError) + ')');
-  end;
+  RunHookCmd(LoadHooks.AfterLaunch, ExitedProfile);
   BtnLaunch.Enabled := True;
   UpdateButtons;
   LvProfiles.Repaint; // clear the Session cell for the ended profile
@@ -1834,13 +1726,7 @@ begin
   end;
 
   Log('Launching ' + Name + '...');
-  var BLHook := LoadHooks.BeforeLaunch;
-  if BLHook <> '' then
-  begin
-    Log('Hook [BeforeLaunch]: ' + BLHook);
-    if not RunHookCmd(BLHook, Name) then
-      Log('Hook [BeforeLaunch] failed to start (error ' + IntToStr(GetLastError) + ')');
-  end;
+  RunHookCmd(LoadHooks.BeforeLaunch, Name);
   BtnLaunch.Enabled := False;
   StatusBar.SimpleText := 'Game running — ' + Name;
   if FTrayOnLaunch and not FStartMinimized then
@@ -2076,7 +1962,6 @@ begin
     SaveRefreshedCookies(Profile, NewCookies);
     FSessionCache.Remove(Profile);
     SetProfileIcon(Profile, 1);
-    TokenTimerTick(nil);
     Log('Re-login OK — credentials updated.');
   end
   else
@@ -2087,7 +1972,6 @@ begin
       SaveRefreshedCookies(Profile, NewCookies);
       FSessionCache.Remove(Profile);
       SetProfileIcon(Profile, 1);
-      TokenTimerTick(nil);
       Log('Re-login OK — credentials updated (2nd attempt).');
     end
     else
