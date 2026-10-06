@@ -1206,6 +1206,7 @@ var
   Status, NexonCode:  Integer;
   NxLSess, DevId:     string;
   Refreshed:          string;
+  Expiry:             TDateTime;
   AllProfs:           TArray<TNexonProfile>;
 begin
   Result := False;
@@ -1231,10 +1232,11 @@ begin
   begin
     LogMsg('Trying autologin refresh...');
     Status    := 0;
-    Refreshed := AutoLoginRefresh(NxLSess, DevId, Status);
+    Refreshed := AutoLoginRefresh(NxLSess, DevId, Status, Expiry);
     if Refreshed <> '' then
     begin
       SaveRefreshedCookies(Profile, Refreshed);
+      if Expiry > 0 then UpdateNxLExpiry(Profile, Expiry);
       Cookies := Refreshed;
       LogMsg('AToken refreshed via autologin.');
       Exit(True);
