@@ -109,6 +109,7 @@ type
     FSessionStart:    TDateTime; // when the game client was launched (for playtime)
     FSessionProfile:  string;   // profile used by the running session
     FSessionTimer:    TTimer;   // live session-time ticker
+    FTokenTimer:      TTimer;   // 60s ticker that refreshes Token Expires column
     FCleanupOnExit:   Boolean;
     FInRefreshProfiles: Boolean; // suppress session check during auto-select
     FNewsLoaded: Boolean;        // feed loaded once, from FormShow (after form is themed/drawn)
@@ -144,6 +145,8 @@ type
     procedure GameExitHandler(Sender: TObject);
     function  SessionTextFor(const Profile: string): string;
     procedure SessionTimerTick(Sender: TObject);
+    function  TokenExpiryTextFor(const ProfileName: string): string;
+    procedure TokenTimerTick(Sender: TObject);
     procedure WMSysCommand(var Msg: TMessage); message WM_SYSCOMMAND;
     procedure MenuForceAllClick(Sender: TObject);
     procedure DoCheckAndUpdate(AutoMode: Boolean; ForceAll: Boolean = False; VerifyMode: Boolean = False);
@@ -529,7 +532,13 @@ begin
   FSessionTimer.Enabled    := False;
   FSessionTimer.OnTimer    := SessionTimerTick;
 
-  // Rebuild columns: status icon | Profile | UserNo | Last Used | Session
+  // Token expiry ticker: refreshes the "Token" column every 60s.
+  FTokenTimer            := TTimer.Create(Self);
+  FTokenTimer.Interval   := 60000;
+  FTokenTimer.Enabled    := True;
+  FTokenTimer.OnTimer    := TokenTimerTick;
+
+  // Rebuild columns: status icon | Profile | UserNo | Last Used | Session | Token
   LvProfiles.SmallImages := ImageList1;
   LvProfiles.Columns.Clear;
   SC := LvProfiles.Columns.Add; SC.Caption := '';          SC.Width := 24;
@@ -537,6 +546,7 @@ begin
   SC := LvProfiles.Columns.Add; SC.Caption := 'User No';   SC.Width := 0;
   SC := LvProfiles.Columns.Add; SC.Caption := 'Last Used'; SC.Width := 68;
   SC := LvProfiles.Columns.Add; SC.Caption := 'Session';   SC.Width := 62;
+  SC := LvProfiles.Columns.Add; SC.Caption := 'Token';     SC.Width := 62;
 
   // Tray icon + menu
   var MI: TMenuItem;
@@ -772,6 +782,8 @@ begin
         Item.SubItems.Add('Never'); // col 3: Last Used
       // col 4: Session time (live; updated by the session timer)
       Item.SubItems.Add(SessionTextFor(P.Name));
+      // col 5: Token expiry countdown (live; updated by the token timer)
+      Item.SubItems.Add(TokenExpiryTextFor(P.Name));
     end;
   finally
     LvProfiles.Items.EndUpdate;
@@ -781,6 +793,7 @@ begin
   LvProfiles.Columns[2].Width := 0;  // UserNo — hidden, kept in data
   LvProfiles.Columns[3].Width := -2; // Last Used: LVSCW_AUTOSIZE_USEHEADER
   LvProfiles.Columns[4].Width := 62; // Session
+  LvProfiles.Columns[5].Width := 66; // Token
 
   // Auto-select last used profile (or top item) silently
   FInRefreshProfiles := True;
@@ -875,6 +888,7 @@ begin
   P.LastUsed := 0;
 
   AddOrUpdateProfile(P, Cookies);
+  UpdateNxLExpiry(P.Name, LastNxLExpiry);
   Log('Profile saved: ' + Name);
   // Debug: show which session keys were captured
   begin
@@ -1182,6 +1196,7 @@ begin
     if Profs[I].Name = Profile then
     begin
       AddOrUpdateProfile(Profs[I], Merged);
+      UpdateNxLExpiry(Profile, LastNxLExpiry);
       Break;
     end;
 end;
@@ -1207,6 +1222,7 @@ var
   NxLSess, DevId:     string;
   Refreshed:          string;
   Expiry:             TDateTime;
+  StoredExpiry:       TDateTime;
   AllProfs:           TArray<TNexonProfile>;
 begin
   Result := False;
@@ -1222,11 +1238,25 @@ begin
   LogMsg(Format('Session expired (HTTP %d%s) — trying refresh.', [Status, Reason]));
 
   // 2. Autologin refresh (email/password accounts; TPA returns error 20182 → skip to step 3).
-  NxLSess := ExtractCookieValue(Cookies, 'NxLSession');
-  DevId   := '';
+  NxLSess      := ExtractCookieValue(Cookies, 'NxLSession');
+  DevId        := '';
+  StoredExpiry := 0;
   AllProfs := LoadProfiles;
   for var P in AllProfs do
-    if P.Name = Profile then begin DevId := P.DeviceId; Break; end;
+    if P.Name = Profile then
+    begin
+      DevId        := P.DeviceId;
+      StoredExpiry := P.NxLExpiry;
+      Break;
+    end;
+
+  // Skip autologin if NxLSession is known-expired; avoids a pointless network round-trip.
+  if (StoredExpiry > 0) and (StoredExpiry < Now) then
+  begin
+    LogMsg(Format('NxLSession expired %s — need full re-login.',
+      [FormatDateTime('yyyy-mm-dd hh:nn', StoredExpiry)]));
+    Exit(False);
+  end;
 
   if (NxLSess <> '') and (DevId <> '') then
   begin
@@ -1660,6 +1690,52 @@ begin
   end;
 end;
 
+function FormatTokenExpiry(Expiry: TDateTime): string;
+var
+  Mins: Int64;
+begin
+  if Expiry <= 0 then Exit('—');
+  Mins := Round((Expiry - Now) * 24 * 60);
+  if Mins < 0 then
+    Result := 'expired'
+  else if Mins < 60 then
+    Result := Format('%dm', [Mins])
+  else if Mins < 24 * 60 then
+    Result := Format('%dh%dm', [Mins div 60, Mins mod 60])
+  else
+    Result := Format('%dd', [Mins div (24 * 60)]);
+end;
+
+function TFormMain.TokenExpiryTextFor(const ProfileName: string): string;
+var
+  Profs: TArray<TNexonProfile>;
+  P:     TNexonProfile;
+begin
+  Result := '';
+  Profs := LoadProfiles;
+  for P in Profs do
+    if P.Name = ProfileName then
+      Exit(FormatTokenExpiry(P.NxLExpiry));
+end;
+
+// Live ticker: repaint every profile's Token cell every 60 s.
+procedure TFormMain.TokenTimerTick(Sender: TObject);
+var
+  I: Integer;
+begin
+  LvProfiles.Items.BeginUpdate;
+  try
+    for I := 0 to LvProfiles.Items.Count - 1 do
+    begin
+      var ProfName := LvProfiles.Items[I].SubItems[0];
+      // SubItems[4] = Token column (col index 5, SubItems is 0-based from col 1)
+      LvProfiles.Items[I].SubItems[4] := TokenExpiryTextFor(ProfName);
+    end;
+  finally
+    LvProfiles.Items.EndUpdate;
+  end;
+end;
+
 procedure TFormMain.GameExitHandler(Sender: TObject);
 var
   Elapsed:        TDateTime;
@@ -1965,6 +2041,7 @@ begin
     FSessionCache.Remove(Profile);
     SetProfileIcon(Profile, 1);
     Log('Re-login OK — credentials updated.');
+    TokenTimerTick(nil);
   end
   else
   begin
@@ -1975,6 +2052,7 @@ begin
       FSessionCache.Remove(Profile);
       SetProfileIcon(Profile, 1);
       Log('Re-login OK — credentials updated (2nd attempt).');
+      TokenTimerTick(nil);
     end
     else
       Log('Re-login cancelled (2nd attempt).');
