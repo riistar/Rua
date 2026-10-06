@@ -43,6 +43,9 @@ uses
   System.Hash, System.NetEncoding,
   System.IOUtils, uLaunchSecurity, uHooks, uSignature;
 
+const
+  ERROR_ELEVATION_REQUIRED = 740; // not in Winapi.Windows
+
 var
   GElevated: Integer = -1; // -1 unknown, 0 no, 1 yes
 
@@ -262,6 +265,7 @@ var
   StubGuid: TGUID;
   ClientFile: THandle;
   Refusal: string;
+  SEI: TShellExecuteInfo;
 begin
   PidStr  := IntToStr(ProductId);
   GameDir := ExtractFileDir(GameExePath);
@@ -408,12 +412,38 @@ begin
   UniqueString(CL);
   if not CreateProcessW(PWideChar(GameExePath), PWideChar(CL), nil, nil, False,
     CREATE_SUSPENDED or CREATE_UNICODE_ENVIRONMENT, PWideChar(ChildEnvironment),
-    PWideChar(GameDir), SI, GamePI) then RaiseLastOSError;
-  StopPipe;
-  FPipeThread := TPipeServerThread.Create(Ticket, Hashed, ProductId, GamePI.hProcess);
-  FPipeThread.Start;
-  if ResumeThread(GamePI.hThread) = DWORD(-1) then RaiseLastOSError;
-  CloseHandle(GamePI.hThread); GamePI.hThread := 0;
+    PWideChar(GameDir), SI, GamePI) then
+  begin
+    ErrorCode := GetLastError;
+    if ErrorCode <> ERROR_ELEVATION_REQUIRED then RaiseLastOSError(ErrorCode);
+    // Client.exe has a highestAvailable manifest. ShellExecuteEx handles the UAC
+    // prompt; the child is spawned by AppInfo and does NOT inherit our env block,
+    // so pass the mapping name via --rua-map on the command line instead.
+    LaunchLog('CreateProcessW: ERROR_ELEVATION_REQUIRED, falling back to ShellExecuteEx');
+    ParamStr := ParamStr + ' --rua-map ' + PrivateTicket.Name;
+    ZeroMemory(@SEI, SizeOf(SEI));
+    SEI.cbSize       := SizeOf(SEI);
+    SEI.fMask        := SEE_MASK_NOCLOSEPROCESS;
+    SEI.lpFile       := PChar(GameExePath);
+    SEI.lpParameters := PChar(ParamStr);
+    SEI.lpDirectory  := PChar(GameDir);
+    SEI.nShow        := SW_SHOWNORMAL;
+    if not ShellExecuteExW(@SEI) then RaiseLastOSError;
+    GamePI.hProcess := SEI.hProcess;
+    GamePI.hThread  := 0;
+    StopPipe;
+    FPipeThread := TPipeServerThread.Create(Ticket, Hashed, ProductId, GamePI.hProcess);
+    FPipeThread.Start;
+  end
+  else
+  begin
+    // Suspended path: pipe authorized to the exact PID before first game instruction.
+    StopPipe;
+    FPipeThread := TPipeServerThread.Create(Ticket, Hashed, ProductId, GamePI.hProcess);
+    FPipeThread.Start;
+    if ResumeThread(GamePI.hThread) = DWORD(-1) then RaiseLastOSError;
+    CloseHandle(GamePI.hThread); GamePI.hThread := 0;
+  end;
   if WaitForSingleObject(ShimReadyEv, 30000) <> WAIT_OBJECT_0 then
     raise Exception.Create('Secure game initialization timed out');
   FreeAndNil(PrivateTicket);
