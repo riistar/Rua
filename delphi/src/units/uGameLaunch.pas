@@ -444,7 +444,7 @@ begin
     if ResumeThread(GamePI.hThread) = DWORD(-1) then RaiseLastOSError;
     CloseHandle(GamePI.hThread); GamePI.hThread := 0;
   end;
-  if WaitForSingleObject(ShimReadyEv, 30000) <> WAIT_OBJECT_0 then
+  if WaitForSingleObject(ShimReadyEv, 120000) <> WAIT_OBJECT_0 then
     raise Exception.Create('Secure game initialization timed out');
   FreeAndNil(PrivateTicket);
   CloseHandle(ShimReadyEv); ShimReadyEv := 0;
