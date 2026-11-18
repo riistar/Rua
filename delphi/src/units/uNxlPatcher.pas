@@ -633,6 +633,9 @@ var
     end;
   var PartResults: TArray<TPartResult>;
   var PartNames:   TArray<string>;
+  var PartDone:    TArray<Boolean>;
+  var NextWrite:   Integer;
+  var WriteLock:   TCriticalSection;
 
 begin
   FinalPath := ContainedTarget(FileRoot, E.Path);
@@ -645,13 +648,21 @@ begin
   Log('  -> ' + FinalPath);
 
   SetLength(PartResults, Length(E.Parts));
+  SetLength(PartDone, Length(E.Parts));
   // Anonymous methods cannot capture the const record E: copy the names out.
   SetLength(PartNames, Length(E.Parts));
   for I := 0 to High(E.Parts) do
     PartNames[I] := E.Parts[I].Name;
+  Total     := 0;
+  NextWrite := 0;
+  FS        := nil;
+  WriteLock := TCriticalSection.Create;
   begin
     try
       try
+        FS := TFileStream.Create(TempPath, fmCreate or fmShareExclusive);
+        // Parts download/verify in parallel but are appended to the file in order
+        // as soon as the next one is ready, so memory holds only out-of-order parts.
         RunParallel(Length(E.Parts), MAX_PARTS, True,
           procedure(Idx: Integer)
           var
@@ -664,28 +675,35 @@ begin
               MAX_PART_BYTES);
             if Sha1Hex(Plain) <> PartName then
               raise EPatchSecurityError.CreateFmt('Downloaded data failed verification (part %s)', [PartName]);
-            PartResults[Idx].Decompressed := Plain;
+            WriteLock.Enter;
+            try
+              PartResults[Idx].Decompressed := Plain;
+              PartDone[Idx] := True;
+              while (NextWrite < Length(PartDone)) and PartDone[NextWrite] do
+              begin
+                if Length(PartResults[NextWrite].Decompressed) > 0 then
+                  FS.WriteBuffer(PartResults[NextWrite].Decompressed[0],
+                    Length(PartResults[NextWrite].Decompressed));
+                Inc(Total, Length(PartResults[NextWrite].Decompressed));
+                PartResults[NextWrite].Decompressed := nil;
+                Inc(NextWrite);
+              end;
+            finally
+              WriteLock.Leave;
+            end;
           end);
+        FreeAndNil(FS);
       except
         on Ex: Exception do
+        begin
+          FreeAndNil(FS);
           raise EPatchSecurityError.Create('Part download failed: ' + Ex.Message);
+        end;
       end;
 
-      Total := 0;
-      for I := 0 to High(E.Parts) do
-        Inc(Total, Length(PartResults[I].Decompressed));
       if Total <> E.FSize then
         raise EPatchSecurityError.CreateFmt('Assembled size %d does not match the manifest (%d): %s',
           [Total, E.FSize, E.Path]);
-
-      FS := TFileStream.Create(TempPath, fmCreate or fmShareExclusive);
-      try
-        for I := 0 to High(E.Parts) do
-          if Length(PartResults[I].Decompressed) > 0 then
-            FS.WriteBuffer(PartResults[I].Decompressed[0], Length(PartResults[I].Decompressed));
-      finally
-        FS.Free;
-      end;
 
       // One move: either the previous file or the verified replacement remains.
       ReplaceWithVerified(TempPath, FinalPath);
@@ -696,8 +714,10 @@ begin
     except
       if TFile.Exists(TempPath) then
         try TFile.Delete(TempPath); except end;
+      FreeAndNil(WriteLock);
       raise;
     end;
+    FreeAndNil(WriteLock);
   end;
 end;
 
