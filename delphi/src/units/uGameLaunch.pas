@@ -452,7 +452,24 @@ begin
     if ResumeThread(GamePI.hThread) = DWORD(-1) then RaiseLastOSError;
     CloseHandle(GamePI.hThread); GamePI.hThread := 0;
   end;
-  if WaitForSingleObject(ShimReadyEv, 120000) <> WAIT_OBJECT_0 then
+  // Wait for the shim, but also watch the game process: if Client.exe dies during
+  // startup (error dialog / crash) fail immediately instead of blocking 120s.
+  var WaitHandles: array[0..1] of THandle;
+  var WaitCount: DWORD := 1;
+  WaitHandles[0] := ShimReadyEv;
+  if GamePI.hProcess <> 0 then
+  begin
+    WaitHandles[1] := GamePI.hProcess;
+    WaitCount := 2;
+  end;
+  var WaitRes := WaitForMultipleObjects(WaitCount, @WaitHandles[0], False, 120000);
+  if WaitRes = WAIT_OBJECT_0 + 1 then
+  begin
+    var EarlyCode: DWORD := 0;
+    GetExitCodeProcess(GamePI.hProcess, EarlyCode);
+    raise Exception.CreateFmt('Game client exited during startup (code %d)', [EarlyCode]);
+  end;
+  if WaitRes <> WAIT_OBJECT_0 then
     raise Exception.Create('Secure game initialization timed out');
   FreeAndNil(PrivateTicket);
   CloseHandle(ShimReadyEv); ShimReadyEv := 0;
