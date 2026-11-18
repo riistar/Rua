@@ -878,11 +878,20 @@ end;
 
 procedure TFormMain.UpdateButtons;
 var
-  HasProfile, HasPath: Boolean;
+  HasProfile, HasPath, Installed: Boolean;
 begin
   HasProfile := SelectedProfile <> '';
   HasPath    := Trim(FDefaultGameExe) <> '';
-  BtnLaunch.Enabled             := HasProfile and HasPath;
+  Installed  := HasPath and TFile.Exists(Trim(FDefaultGameExe));
+  BtnLaunch.Enabled             := HasProfile and Installed;
+  // Idle button: "Install Game" while the game files are missing.
+  if not FDownloadActive then
+  begin
+    if HasPath and not Installed then
+      BtnCheckUpdate.Caption := 'Install Game'
+    else if BtnCheckUpdate.Caption = 'Install Game' then
+      BtnCheckUpdate.Caption := 'Check for Updates';
+  end;
   MenuRefreshToken.Enabled      := HasProfile;
   MenuEditProfile.Enabled       := HasProfile;
   MenuDeleteProfile.Enabled := HasProfile;
@@ -1396,7 +1405,9 @@ begin
     UpdateRoots:      TArray<string>;
     OutdatedRoots:    TArray<string>;
     HookFired:        Boolean;
+    FreshRoots:       TArray<string>;
   begin
+    FreshRoots       := [];
     Error            := '';
     SkipFinalCleanup := False;
     HookFired        := False;
@@ -1454,15 +1465,38 @@ begin
             'patchdata\' + IntToStr(ProductId) + '.manifest.hash');
           if TFile.Exists(HashFile) then
             LocalHash := Trim(TFile.ReadAllText(HashFile));
-          if LocalHash <> RemoteHash then
-            OutdatedRoots := OutdatedRoots + [R];
-          if VerifyMode or ForceAll or (LocalHash <> RemoteHash) then
-            UpdateRoots := UpdateRoots + [R]
+          if not TFile.Exists(TPath.Combine(R, 'Client.exe')) then
+          begin
+            // No game files here: full install, no folder/file selection, never
+            // started automatically (it is a multi-GB download).
+            FreshRoots := FreshRoots + [R];
+            TThread.Queue(nil, procedure begin Log(R + ': game not installed.'); end);
+          end
           else
-            TThread.Queue(nil, procedure begin Log(R + ': up to date.'); end);
+          begin
+            if LocalHash <> RemoteHash then
+              OutdatedRoots := OutdatedRoots + [R];
+            if VerifyMode or ForceAll or (LocalHash <> RemoteHash) then
+              UpdateRoots := UpdateRoots + [R]
+            else
+              TThread.Queue(nil, procedure begin Log(R + ': up to date.'); end);
+          end;
 
           TThread.Queue(nil, procedure begin PrgUpdate.Position := I; end);
         end)(InstRoot, CheckIdx);
+      end;
+
+      if Length(FreshRoots) > 0 then
+      begin
+        if AutoMode then
+        begin
+          // Startup check: only surface it, the user starts the install.
+          FUpdateAvailable := True;
+          TThread.Queue(nil, procedure
+          begin
+            Log('Game not installed — click "Install Game" to download it.');
+          end);
+        end;
       end;
 
       // Phase 2: let the user pick folders (one, several, all or none) and the mode:
@@ -1484,6 +1518,10 @@ begin
             ForceAll    := Mode = umForceAll;
           end;
         end);
+
+      // Fresh installs skip the folder dialog and always run (interactive only).
+      if not AutoMode then
+        UpdateRoots := UpdateRoots + FreshRoots;
 
       // Fire BeforePatch once before first actual download starts.
       if (Length(UpdateRoots) > 0) and not HookFired then
@@ -1518,12 +1556,15 @@ begin
           var
             OldManifest: string;
             SelectFn:    TPatchSelect;
+            Fresh:       Boolean;
           begin
+            // Fresh install (no Client.exe): download everything, nothing to pick.
+            Fresh := not TFile.Exists(TPath.Combine(R, 'Client.exe'));
             // Diff against the manifest of the installed version (cached after the
             // last update) so same-size content changes are caught too. Verify and
             // re-download compare against the disk only.
             OldManifest := '';
-            if not (VerifyMode or ForceAll) then
+            if not (VerifyMode or ForceAll or Fresh) then
             begin
               var HF := TPath.Combine(R, 'patchdata\' + IntToStr(ProductId) + '.manifest.hash');
               if TFile.Exists(HF) then
@@ -1538,7 +1579,7 @@ begin
             // Interactive runs list the changed files and let the user pick
             // (Selected / All / None). Auto-update and re-download-all don't ask.
             SelectFn := nil;
-            if not AutoMode and not ForceAll then
+            if not AutoMode and not ForceAll and not Fresh then
               SelectFn := function(const Items: TArray<TPatchItem>;
                 out Selected: TArray<string>): Boolean
               var
@@ -1556,8 +1597,16 @@ begin
 
             TThread.Queue(nil, procedure
             begin
-              Log('Verifying: ' + R);
-              LblProgress.Caption := 'Verifying files...';
+              if Fresh then
+              begin
+                Log('Installing: ' + R);
+                LblProgress.Caption := 'Installing...';
+              end
+              else
+              begin
+                Log('Verifying: ' + R);
+                LblProgress.Caption := 'Verifying files...';
+              end;
               PrgUpdate.Position  := 0;
               // Pause/resume lives on the single update button (stays visible).
               BtnCheckUpdate.Caption := 'Pause';
@@ -1602,7 +1651,7 @@ begin
                   PrgUpdate.Position  := Pct;
                 end);
               end,
-              OldManifest, ForceAll,
+              OldManifest, ForceAll or Fresh,
               function: Boolean begin Result := FCancelDownload; end,
               FPauseEvent, False, nil, LoadIgnorePatterns, SelectFn);
 
