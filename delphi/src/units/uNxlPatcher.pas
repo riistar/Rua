@@ -92,6 +92,11 @@ procedure DiagnoseManifest(const ManifestHash, InstallRoot: string;
 function IsSha1Hex(const S: string): Boolean;
 function SafeManifestPath(const Raw: string): string; // raises EPatchSecurityError
 function ResolvePatchFileRoot(const InstallRoot: string): string;
+// Official Nexon layout: <game>\appdata (files) + <game>\patchdata (version marker).
+// PatchDataDir = where patchdata is written. PatchDataFile = existing file path
+// (new location first, legacy <appdata>\patchdata fallback), else the new path.
+function PatchDataDir(const InstallRoot: string): string;
+function PatchDataFile(const InstallRoot, FileName: string): string;
 function ContainedTarget(const FileRoot, RelPath: string): string; // raises EPatchSecurityError
 function BoundedZlibDecomp(const Src: TBytes; MaxBytes: Int64): TBytes;
 function Sha1Hex(const Data: TBytes): string;
@@ -329,6 +334,28 @@ begin
     Result := AppData
   else
     Result := InstallRoot;
+end;
+
+function PatchDataDir(const InstallRoot: string): string;
+var
+  Root: string;
+begin
+  Root := ExcludeTrailingPathDelimiter(InstallRoot);
+  if SameText(ExtractFileName(Root), 'appdata') and
+     (TPath.GetDirectoryName(Root) <> '') then
+    Result := TPath.Combine(TPath.GetDirectoryName(Root), 'patchdata')
+  else
+    Result := TPath.Combine(Root, 'patchdata');
+end;
+
+function PatchDataFile(const InstallRoot, FileName: string): string;
+var
+  Legacy: string;
+begin
+  Result := TPath.Combine(PatchDataDir(InstallRoot), FileName);
+  if TFile.Exists(Result) then Exit;
+  Legacy := TPath.Combine(TPath.Combine(ExcludeTrailingPathDelimiter(InstallRoot), 'patchdata'), FileName);
+  if TFile.Exists(Legacy) then Result := Legacy;
 end;
 
 // Full target path for a validated relative path. Refuses anything resolving
@@ -758,8 +785,8 @@ procedure RecordInstalledVersion(const InstallRoot, ManifestHash, JSON: string;
 begin
   // ManifestHash was validated as 40-hex before any download.
   try
-    var HashFile := TPath.Combine(InstallRoot,
-      'patchdata\' + IntToStr(ProductId) + '.manifest.hash');
+    var HashFile := TPath.Combine(PatchDataDir(InstallRoot),
+      IntToStr(ProductId) + '.manifest.hash');
     TDirectory.CreateDirectory(TPath.GetDirectoryName(HashFile));
     TFile.WriteAllText(HashFile, ManifestHash, TEncoding.UTF8);
     Log('Hash file updated.');
@@ -769,8 +796,8 @@ begin
 
   // Cache decompressed manifest for next objects[] diff
   try
-    TFile.WriteAllText(TPath.Combine(InstallRoot,
-      'patchdata\' + ManifestHash + '.manifest.json'), JSON, TEncoding.UTF8);
+    TFile.WriteAllText(TPath.Combine(PatchDataDir(InstallRoot),
+      ManifestHash + '.manifest.json'), JSON, TEncoding.UTF8);
     Log('Manifest cached.');
   except
     on Ex: Exception do Log('Warning: could not cache manifest: ' + Ex.Message);

@@ -1461,8 +1461,7 @@ begin
           end);
 
           LocalHash := '';
-          HashFile  := TPath.Combine(R,
-            'patchdata\' + IntToStr(ProductId) + '.manifest.hash');
+          HashFile  := PatchDataFile(R, IntToStr(ProductId) + '.manifest.hash');
           if TFile.Exists(HashFile) then
             LocalHash := Trim(TFile.ReadAllText(HashFile));
           if not TFile.Exists(TPath.Combine(R, 'Client.exe')) then
@@ -1567,13 +1566,13 @@ begin
             OldManifest := '';
             if not (VerifyMode or ForceAll or Fresh) then
             begin
-              var HF := TPath.Combine(R, 'patchdata\' + IntToStr(ProductId) + '.manifest.hash');
+              var HF := PatchDataFile(R, IntToStr(ProductId) + '.manifest.hash');
               if TFile.Exists(HF) then
               begin
                 var LH := LowerCase(Trim(TFile.ReadAllText(HF)));
                 if IsSha1Hex(LH) and (LH <> RemoteHash) then
                   OldManifest := LoadCachedManifest(
-                    TPath.Combine(R, 'patchdata\' + LH + '.manifest.json'));
+                    PatchDataFile(R, LH + '.manifest.json'));
               end;
             end;
 
