@@ -111,7 +111,7 @@ const
   // which self-throttles against the CDN. This also backs a reusable
   // THTTPClient pool so parts reuse keep-alive connections instead of paying
   // a fresh TCP+TLS handshake per part.
-  MAX_CONCURRENT_HTTP = 16;
+  MAX_CONCURRENT_HTTP = 32;
   // Bounds well above live data (manifest 0.2 MB packed / 1.1 MB plain, parts
   // at most 4 MiB, largest file 165 MB) that stop hostile or corrupt input from
   // exhausting memory or disk.
@@ -553,15 +553,78 @@ begin
   RaiseLastOSError;
 end;
 
+// Runs Body(0..Count-1) on dedicated worker threads pulling indexes from a shared
+// counter. Deliberately NOT TTask/the PPL pool: pool threads that block on
+// semaphores or on HTTP starve the pool, which then injects new workers very
+// slowly and throttles downloads to a crawl. StopOnError: abort remaining items
+// after the first exception, then re-raise it here (otherwise Body must not raise).
+procedure RunParallel(Count, Workers: Integer; StopOnError: Boolean;
+  const Body: TProc<Integer>);
+var
+  Next, Failed: Integer;
+  ErrMsg:  string;
+  ErrLock: TCriticalSection;
+  Threads: TArray<TThread>;
+  W:       Integer;
+begin
+  if Count <= 0 then Exit;
+  Workers := Max(1, Min(Workers, Count));
+  Next    := -1;
+  Failed  := 0;
+  ErrMsg  := '';
+  ErrLock := TCriticalSection.Create;
+  try
+    SetLength(Threads, Workers);
+    for W := 0 to Workers - 1 do
+    begin
+      Threads[W] := TThread.CreateAnonymousThread(procedure
+      var
+        Idx: Integer;
+      begin
+        while True do
+        begin
+          if StopOnError and (TInterlocked.CompareExchange(Failed, 0, 0) <> 0) then Break;
+          Idx := TInterlocked.Increment(Next);
+          if Idx >= Count then Break;
+          try
+            Body(Idx);
+          except
+            on Ex: Exception do
+            begin
+              ErrLock.Enter;
+              try
+                if ErrMsg = '' then ErrMsg := Ex.Message;
+              finally
+                ErrLock.Leave;
+              end;
+              TInterlocked.Exchange(Failed, 1);
+            end;
+          end;
+        end;
+      end);
+      Threads[W].FreeOnTerminate := False;
+    end;
+    for W := 0 to Workers - 1 do
+      Threads[W].Start;
+    for W := 0 to Workers - 1 do
+    begin
+      Threads[W].WaitFor;
+      Threads[W].Free;
+    end;
+  finally
+    ErrLock.Free;
+  end;
+  if ErrMsg <> '' then
+    raise Exception.Create(ErrMsg);
+end;
+
 procedure PatchFile(const E: TFileEntry; const FileRoot: string; const Log: TPatchLog);
 const
-  MAX_PARTS = 4;   // bound per-file part concurrency (total ≈ MAX_DL × MAX_PARTS)
+  MAX_PARTS = 6;   // per-file part concurrency (total is also capped by the HTTP semaphore)
 var
   FinalPath, TempPath, Dir: string;
-  Tasks:     TArray<ITask>;
   FS:        TFileStream;
   I:         Integer;
-  PartSem:   TSemaphore;
   Total:     Int64;
 
   type
@@ -569,30 +632,7 @@ var
       Decompressed: TBytes;
     end;
   var PartResults: TArray<TPartResult>;
-
-  // Fetch + decompress + verify a single part, throttled by PartSem.
-  // Idx/PartName by value → each task gets its own captures.
-  procedure FetchPart(Idx: Integer; const PartName: string);
-  begin
-    Tasks[Idx] := TTask.Run(procedure
-    var
-      URL:      string;
-      RawBytes: TBytes;
-      Plain:    TBytes;
-    begin
-      PartSem.Acquire;
-      try
-        URL := DOWNLOAD_BASE + Copy(PartName, 1, 2) + '/' + PartName;
-        RawBytes := HttpGetBytes(URL, MAX_PART_BYTES);
-        Plain := BoundedZlibDecomp(RawBytes, MAX_PART_BYTES);
-        if Sha1Hex(Plain) <> PartName then
-          raise EPatchSecurityError.CreateFmt('Downloaded data failed verification (part %s)', [PartName]);
-        PartResults[Idx].Decompressed := Plain;
-      finally
-        PartSem.Release;
-      end;
-    end);
-  end;
+  var PartNames:   TArray<string>;
 
 begin
   FinalPath := ContainedTarget(FileRoot, E.Path);
@@ -605,23 +645,30 @@ begin
   Log('  -> ' + FinalPath);
 
   SetLength(PartResults, Length(E.Parts));
-  SetLength(Tasks,       Length(E.Parts));
-  PartSem := TSemaphore.Create(nil, MAX_PARTS, MAX_PARTS, '');
-  try
+  // Anonymous methods cannot capture the const record E: copy the names out.
+  SetLength(PartNames, Length(E.Parts));
+  for I := 0 to High(E.Parts) do
+    PartNames[I] := E.Parts[I].Name;
+  begin
     try
-      for I := 0 to High(E.Parts) do
-        FetchPart(I, E.Parts[I].Name);
-
       try
-        TTask.WaitForAll(Tasks);
+        RunParallel(Length(E.Parts), MAX_PARTS, True,
+          procedure(Idx: Integer)
+          var
+            PartName: string;
+            Plain:    TBytes;
+          begin
+            PartName := PartNames[Idx];
+            Plain := BoundedZlibDecomp(
+              HttpGetBytes(DOWNLOAD_BASE + Copy(PartName, 1, 2) + '/' + PartName, MAX_PART_BYTES),
+              MAX_PART_BYTES);
+            if Sha1Hex(Plain) <> PartName then
+              raise EPatchSecurityError.CreateFmt('Downloaded data failed verification (part %s)', [PartName]);
+            PartResults[Idx].Decompressed := Plain;
+          end);
       except
-        on Ex: EAggregateException do
-        begin
-          if Ex.Count > 0 then
-            raise EPatchSecurityError.Create('Part download failed: ' + Ex.InnerExceptions[0].Message)
-          else
-            raise;
-        end;
+        on Ex: Exception do
+          raise EPatchSecurityError.Create('Part download failed: ' + Ex.Message);
       end;
 
       Total := 0;
@@ -651,8 +698,6 @@ begin
         try TFile.Delete(TempPath); except end;
       raise;
     end;
-  finally
-    PartSem.Free;
   end;
 end;
 
@@ -728,13 +773,13 @@ procedure RunPatcher(const ManifestHash, InstallRoot: string;
   const IgnorePatterns: TArray<string> = nil;
   const SelectFiles: TPatchSelect = nil);
 const
-  MAX_DL = 8;
+  MAX_DL = 16;
 var
   Compressed, Plain: TBytes;
   JSON:     string;
   FileRoot: string;
   All:      TArray<TFileEntry>;
-  Need:     TArray<TFileEntry>;
+  Need:    TArray<TFileEntry>;
   Items:    TArray<TPatchItem>;  // parallel to Need: reason + local size for the UI
   Partial:  Boolean;
   E:        TFileEntry;
@@ -742,8 +787,6 @@ var
   Done:     Integer;
   Failed:   Integer;
   FirstError: string;
-  Tasks:    TArray<ITask>;
-  Sem:      TSemaphore;
   FileLock: TCriticalSection;
   FileDone: TDictionary<string, Boolean>;
 
@@ -751,49 +794,6 @@ var
   // avoiding the Delphi loop-closure aliasing bug: inline 'var Entry' inside
   // a for-loop body shares one heap slot across all iterations, so every task
   // would read the last iteration's value by the time it executes.
-  procedure SpawnOne(Idx: Integer; E: TFileEntry);
-  begin
-    Tasks[Idx] := TTask.Run(procedure
-    begin
-      if Assigned(ShouldCancel) and ShouldCancel() then Exit;
-      Sem.Acquire;
-      try
-        if Assigned(PauseEvent) then PauseEvent.WaitFor(INFINITE);
-        if Assigned(ShouldCancel) and ShouldCancel() then Exit;
-        var Key:  string;
-        var Skip: Boolean;
-        Key := E.Path.ToLower;
-        FileLock.Enter;
-        try
-          Skip := FileDone.ContainsKey(Key);
-          if not Skip then FileDone.Add(Key, True);
-        finally
-          FileLock.Leave;
-        end;
-        if Skip then Exit;
-        var Cur := TInterlocked.Increment(Done);
-        Log(Format('[%d/%d] %s (%d parts)', [Cur, NeedN, E.Path, Length(E.Parts)]));
-        if Assigned(Progress) then Progress(Cur, NeedN, E.Path);
-        try
-          PatchFile(E, FileRoot, Log);
-        except
-          on Ex: Exception do
-          begin
-            Log('  ERROR [' + E.Path + ']: ' + Ex.Message);
-            FileLock.Enter;
-            try
-              Inc(Failed);
-              if FirstError = '' then FirstError := E.Path + ': ' + Ex.Message;
-            finally
-              FileLock.Leave;
-            end;
-          end;
-        end;
-      finally
-        Sem.Release;
-      end;
-    end);
-  end;
 
 begin
   if not IsSha1Hex(ManifestHash) then
@@ -872,24 +872,21 @@ begin
 
   // Parallel verify: process files concurrently with semaphore
   var ScanLock := TCriticalSection.Create;
-  var ScanTasks: TArray<ITask>;
-  var ScanSem := TSemaphore.Create(nil, MAX_DL, MAX_DL, '');
   var ScanIdx := 0;
   var ScanDone := 0;
   var ScanChunkHint: Int64 := 0;
   if (OldDict = nil) and not ForceAll then
     Log('  no cached manifest for the installed version: verifying file contents (one-time, can take a while)');
   try
-    SetLength(ScanTasks, Length(Candidates));
-    for var CI := 0 to High(Candidates) do
-    begin
-      (procedure(const Entry: TFileEntry; const Idx: Integer)
+    // Dedicated worker threads (not TTask): see RunParallel.
+    RunParallel(Length(Candidates), MAX_DL, False,
+      procedure(Idx: Integer)
+      var
+        Entry: TFileEntry;
       begin
-        ScanTasks[Idx] := TTask.Run(procedure
-        begin
+          Entry := Candidates[Idx];
           if Assigned(ShouldCancel) and ShouldCancel() then Exit;
-          ScanSem.Acquire;
-          try
+          begin
             if Assigned(PauseEvent) then PauseEvent.WaitFor(INFINITE);
             if Assigned(ShouldCancel) and ShouldCancel() then Exit;
 
@@ -953,16 +950,10 @@ begin
             end;
 
             TInterlocked.Increment(ScanDone);
-          finally
-            ScanSem.Release;
           end;
-        end);
-      end)(Candidates[CI], CI);
-    end;
-    TTask.WaitForAll(ScanTasks);
+      end);
   finally
     ScanLock.Free;
-    ScanSem.Free;
     OldDict.Free; // freed only after every scan task is done with it
   end;
 
@@ -1028,18 +1019,53 @@ begin
   Done       := 0;
   Failed     := 0;
   FirstError := '';
-  Sem      := TSemaphore.Create(nil, MAX_DL, MAX_DL, '');
   FileLock := TCriticalSection.Create;
   FileDone := TDictionary<string, Boolean>.Create;
-  SetLength(Tasks, NeedN);
   try
-    for var I := 0 to NeedN - 1 do
-      SpawnOne(I, Need[I]);
-    TTask.WaitForAll(Tasks);
+    RunParallel(NeedN, MAX_DL, False,
+      // Runs on a worker thread; never raises.
+      procedure(Idx: Integer)
+      var
+        PE:   TFileEntry;
+        Key:  string;
+        Skip: Boolean;
+        Cur:  Integer;
+      begin
+        PE := Need[Idx];
+        if Assigned(ShouldCancel) and ShouldCancel() then Exit;
+        if Assigned(PauseEvent) then PauseEvent.WaitFor(INFINITE);
+        if Assigned(ShouldCancel) and ShouldCancel() then Exit;
+        Key := PE.Path.ToLower;
+        FileLock.Enter;
+        try
+          Skip := FileDone.ContainsKey(Key);
+          if not Skip then FileDone.Add(Key, True);
+        finally
+          FileLock.Leave;
+        end;
+        if Skip then Exit;
+        Cur := TInterlocked.Increment(Done);
+        Log(Format('[%d/%d] %s (%d parts)', [Cur, NeedN, PE.Path, Length(PE.Parts)]));
+        if Assigned(Progress) then Progress(Cur, NeedN, PE.Path);
+        try
+          PatchFile(PE, FileRoot, Log);
+        except
+          on Ex: Exception do
+          begin
+            Log('  ERROR [' + PE.Path + ']: ' + Ex.Message);
+            FileLock.Enter;
+            try
+              Inc(Failed);
+              if FirstError = '' then FirstError := PE.Path + ': ' + Ex.Message;
+            finally
+              FileLock.Leave;
+            end;
+          end;
+        end;
+      end);
   finally
     FileDone.Free;
     FileLock.Free;
-    Sem.Free;
   end;
 
   if Assigned(ShouldCancel) and ShouldCancel() then
