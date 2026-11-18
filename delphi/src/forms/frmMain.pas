@@ -1556,6 +1556,7 @@ begin
           var
             OldManifest: string;
             SelectFn:    TPatchSelect;
+            IgnoreList:  TArray<string>;
             Fresh:       Boolean;
           begin
             // Fresh install (no Client.exe): download everything, nothing to pick.
@@ -1612,6 +1613,13 @@ begin
               BtnCheckUpdate.Caption := 'Pause';
             end);
 
+            // Fresh install: nothing exists locally, so the ignore list must not
+            // skip any file (it only protects existing files during updates).
+            if Fresh then
+              SetLength(IgnoreList, 0)
+            else
+              IgnoreList := LoadIgnorePatterns;
+
             RunPatcher(RemoteHash, R, ProductId,
               procedure(const Msg: string)
               begin
@@ -1653,7 +1661,7 @@ begin
               end,
               OldManifest, ForceAll or Fresh,
               function: Boolean begin Result := FCancelDownload; end,
-              FPauseEvent, False, nil, LoadIgnorePatterns, SelectFn);
+              FPauseEvent, False, nil, IgnoreList, SelectFn);
 
             TThread.Queue(nil, procedure
             begin
