@@ -82,6 +82,12 @@ procedure RunPatcher(const ManifestHash, InstallRoot: string;
   const SelectFiles: TPatchSelect = nil);
 function LoadCachedManifest(const Path: string): string;
 
+// DEBUG, read-only: compares the live manifest with what the scan would list
+// (and, with Deep, with the real file content). Writes ReportPath + .tsv.
+procedure DiagnoseManifest(const ManifestHash, InstallRoot: string;
+  ProductId: Integer; const ReportPath: string; Deep: Boolean;
+  const Log: TPatchLog; const IgnorePatterns: TArray<string>);
+
 // Exposed for SecurityTests.
 function IsSha1Hex(const S: string): Boolean;
 function SafeManifestPath(const Raw: string): string; // raises EPatchSecurityError
@@ -93,10 +99,10 @@ function Sha1Hex(const Data: TBytes): string;
 implementation
 
 uses
-  Winapi.Windows;
+  Winapi.Windows, System.StrUtils;
 
 const
-  CDN_BASE      = 'https://download2.nexon.net/Game/nxl/games/10200/';
+  CDN_BASE     = 'https://download2.nexon.net/Game/nxl/games/10200/';
   MANIFEST_BASE = CDN_BASE;
   DOWNLOAD_BASE = CDN_BASE + '10200/';
   // Global cap on simultaneous HTTP requests (manifest + all file parts across
@@ -706,6 +712,11 @@ begin
   end;
 end;
 
+// Defined below (shared with DiagnoseManifest): hashes the local file against
+// the manifest part ids. Returns OK / BAD / SKIP.
+function DiagDeepCheck(const FullPath: string; const E: TFileEntry;
+  var ChunkHint: Int64; out Detail: string): string; forward;
+
 procedure RunPatcher(const ManifestHash, InstallRoot: string;
   ProductId: Integer; const Log: TPatchLog;
   const Progress: TPatchProgress = nil;
@@ -865,6 +876,9 @@ begin
   var ScanSem := TSemaphore.Create(nil, MAX_DL, MAX_DL, '');
   var ScanIdx := 0;
   var ScanDone := 0;
+  var ScanChunkHint: Int64 := 0;
+  if (OldDict = nil) and not ForceAll then
+    Log('  no cached manifest for the installed version: verifying file contents (one-time, can take a while)');
   try
     SetLength(ScanTasks, Length(Candidates));
     for var CI := 0 to High(Candidates) do
@@ -890,8 +904,35 @@ begin
             if (Reason = '') and (OldDict <> nil) then
             begin
               var OldHash: string;
-              if not OldDict.TryGetValue(Entry.Path.ToLower, OldHash) or (OldHash <> Entry.ObjHash) then
+              if OldDict.TryGetValue(Entry.Path.ToLower, OldHash) then
+              begin
+                if OldHash <> Entry.ObjHash then Reason := 'Content changed';
+              end
+              else
+                Reason := 'Content changed'; // not in the installed version's manifest
+            end;
+            // No cached manifest vouching for this file (e.g. installed by the
+            // official launcher, or cache lost): size matches but content is
+            // unproven, so hash the local file against the manifest part ids.
+            // The cache written after a successful update makes this a one-off.
+            if (Reason = '') and (OldDict = nil) and not ForceAll then
+            begin
+              var Det: string;
+              var Hint := ScanChunkHint;
+              var Res := DiagDeepCheck(TPath.Combine(FileRoot, Entry.Path), Entry, Hint, Det);
+              if Hint > 0 then ScanChunkHint := Hint;
+              if Res = 'BAD' then
+              begin
+                Log('  content mismatch: ' + Entry.Path + ' (' + Det + ')');
                 Reason := 'Content changed';
+              end
+              else if (Res = 'SKIP') and not Det.StartsWith('read error') then
+              begin
+                Log('  content unverifiable, will re-download: ' + Entry.Path + ' (' + Det + ')');
+                Reason := 'Content changed';
+              end
+              else if Res = 'SKIP' then
+                Log('  warning: could not read ' + Entry.Path + ' (' + Det + ')');
             end;
             if (Reason = '') and ForceAll then
               Reason := 'Re-download';
@@ -1022,6 +1063,345 @@ begin
 
   RecordInstalledVersion(InstallRoot, ManifestHash, JSON, ProductId, Log);
   Log('Patch complete.');
+end;
+
+// ---------------------------------------------------------------------------
+// DEBUG: manifest diagnosis. Read-only -- never writes to the game folder or
+// the version marker. Compares the live manifest against (a) what RunPatcher's
+// scan would list (same NeedsPatch + cached-manifest logic) and (b) optionally
+// the real content (SHA1 of every local part vs manifest object ids), so files
+// the scan wrongly skips ("false negatives") show up.
+// ---------------------------------------------------------------------------
+
+type
+  TDiagRow = record
+    Path:      string;
+    FSize:     Int64;
+    LocalSize: Int64;
+    MTimeMan:  TDateTime;
+    MTimeLoc:  TDateTime;
+    Rua:       string;  // what RunPatcher would do: '' (skip), IGNORED, or reason
+    Cache:     string;  // no-cache / same / changed / not-in-cache
+    Deep:      string;  // '', OK, BAD, SKIP
+    Detail:    string;
+  end;
+
+const
+  DEEP_CHUNKS: array[0..10] of Int64 = (65536, 131072, 262144, 524288, 1048576,
+    2097152, 4194304, 8388608, 16777216, 33554432, 67108864);
+
+function DiagHashRange(FS: TFileStream; Pos, Len: Int64): string;
+var
+  Buf: TBytes;
+begin
+  SetLength(Buf, Len);
+  FS.Position := Pos;
+  if Len > 0 then FS.ReadBuffer(Buf[0], Len);
+  Result := Sha1Hex(Buf);
+end;
+
+// Verifies the local file against the manifest part ids. Returns OK/BAD/SKIP.
+function DiagDeepCheck(const FullPath: string; const E: TFileEntry;
+  var ChunkHint: Int64; out Detail: string): string;
+var
+  FS:    TFileStream;
+  Chunk: Int64;
+  I:     Integer;
+  Len:   Int64;
+begin
+  Detail := '';
+  try
+    FS := TFileStream.Create(FullPath, fmOpenRead or fmShareDenyNone);
+    try
+      if FS.Size <> E.FSize then
+        Exit('BAD');  // size mismatch is reported by the Rua column
+      Chunk := 0;
+      if Length(E.Parts) = 1 then
+        Chunk := E.FSize
+      else
+      begin
+        if (ChunkHint > 0) and (ChunkHint < E.FSize) and
+           (DiagHashRange(FS, 0, ChunkHint) = E.Parts[0].Name) then
+          Chunk := ChunkHint
+        else
+          for var C in DEEP_CHUNKS do
+            if (C < E.FSize) and (DiagHashRange(FS, 0, C) = E.Parts[0].Name) then
+            begin
+              Chunk := C;
+              ChunkHint := C;
+              Break;
+            end;
+      end;
+      if Chunk = 0 then
+      begin
+        // Part 0 matched no candidate size: either the file really differs in
+        // its first part, or the chunk size is unusual. Cannot tell which.
+        Detail := 'part 0 matched no known chunk size (corrupt first part or unusual layout)';
+        Exit('SKIP');
+      end;
+      if (Length(E.Parts) = 1) and (E.FSize > MAX_PART_BYTES) then
+      begin
+        Detail := 'single part too large to hash';
+        Exit('SKIP');
+      end;
+      if ((E.FSize + Chunk - 1) div Chunk <> Length(E.Parts)) and (E.FSize > 0) then
+      begin
+        Detail := Format('part layout differs: %d parts listed, chunk %d implies %d',
+          [Length(E.Parts), Chunk, (E.FSize + Chunk - 1) div Chunk]);
+        Exit('SKIP');
+      end;
+      for I := 0 to High(E.Parts) do
+      begin
+        Len := Min(Chunk, E.FSize - Int64(I) * Chunk);
+        if DiagHashRange(FS, Int64(I) * Chunk, Len) <> E.Parts[I].Name then
+        begin
+          Detail := Format('part %d/%d differs (offset %d)', [I + 1, Length(E.Parts), Int64(I) * Chunk]);
+          Exit('BAD');
+        end;
+      end;
+      Result := 'OK';
+    finally
+      FS.Free;
+    end;
+  except
+    on Ex: Exception do
+    begin
+      Detail := 'read error: ' + Ex.Message;
+      Result := 'SKIP';
+    end;
+  end;
+end;
+
+// InstallRoot: folder containing patchdata\. ReportPath: text report; a .tsv with
+// every file is written beside it. Deep=True hashes all local files (slow).
+procedure DiagnoseManifest(const ManifestHash, InstallRoot: string;
+  ProductId: Integer; const ReportPath: string; Deep: Boolean;
+  const Log: TPatchLog; const IgnorePatterns: TArray<string>);
+var
+  Compressed, Plain: TBytes;
+  JSON, FileRoot, StoredHash, HF, CachePath, OldJSON: string;
+  All, Cand, OldEntries: TArray<TFileEntry>;
+  Rows:    TArray<TDiagRow>;
+  Seen:    TDictionary<string, TFileEntry>;
+  OldDict: TDictionary<string, string>;
+  Dups:    TStringList;
+  Rep, Tsv: TStringList;
+  CacheState, RuaCount, FalseNeg, FalsePos, DeepBad, DeepSkip, IgnoredN, DirN: Integer;
+  ChunkHint: Int64;
+  Silent: TPatchLog;
+  function Fmt(D: TDateTime): string;
+  begin
+    if D <= 0 then Result := '-' else Result := FormatDateTime('yyyy-mm-dd hh:nn:ss', D);
+  end;
+begin
+  if not IsSha1Hex(ManifestHash) then
+    raise EPatchSecurityError.Create('Invalid manifest hash');
+  Silent := procedure(const Msg: string) begin end;
+  FileRoot := ResolvePatchFileRoot(InstallRoot);
+  Log('Install root: ' + InstallRoot);
+  Log('File root:    ' + FileRoot);
+
+  Log('Downloading manifest ' + ManifestHash + ' ...');
+  Compressed := HttpGetBytes(MANIFEST_BASE + ManifestHash, MAX_MANIFEST_DOWNLOAD);
+  Plain := BoundedZlibDecomp(Compressed, MAX_MANIFEST_PLAIN);
+  if Sha1Hex(Plain) <> ManifestHash then
+    raise EPatchSecurityError.Create('Manifest failed SHA1 verification');
+  JSON := TEncoding.UTF8.GetString(Plain);
+  All  := ParseManifest(JSON, True);
+  Log(Format('Manifest: %d entries.', [Length(All)]));
+
+  // Stored version marker + cached manifest (what a normal check diffs against).
+  StoredHash := '';
+  HF := TPath.Combine(InstallRoot, 'patchdata\' + IntToStr(ProductId) + '.manifest.hash');
+  if TFile.Exists(HF) then StoredHash := LowerCase(Trim(TFile.ReadAllText(HF)));
+  OldJSON := '';
+  CachePath := '';
+  if IsSha1Hex(StoredHash) and (StoredHash <> ManifestHash) then
+  begin
+    CachePath := TPath.Combine(InstallRoot, 'patchdata\' + StoredHash + '.manifest.json');
+    OldJSON := LoadCachedManifest(CachePath);
+  end;
+  OldDict := nil;
+  if OldJSON <> '' then
+  begin
+    OldEntries := ParseManifest(OldJSON, False);
+    OldDict := BuildObjHashDict(OldEntries);
+  end;
+
+  // Unique, non-dir candidates; remember duplicate paths with differing content.
+  Dups := TStringList.Create;
+  Seen := TDictionary<string, TFileEntry>.Create;
+  try
+    DirN := 0;
+    for var E in All do
+    begin
+      if E.IsDir then begin Inc(DirN); Continue; end;
+      var Key := E.Path.ToLower;
+      var Prev: TFileEntry;
+      if Seen.TryGetValue(Key, Prev) then
+      begin
+        if Prev.ObjHash <> E.ObjHash then
+          Dups.Add(Format('%s  (first: %d B, %d parts | later: %d B, %d parts -- Rua uses the FIRST)',
+            [E.Path, Prev.FSize, Length(Prev.Parts), E.FSize, Length(E.Parts)]))
+        else
+          Dups.Add(E.Path + '  (identical duplicate)');
+        Continue;
+      end;
+      Seen.Add(Key, E);
+      Cand := Cand + [E];
+    end;
+  finally
+    Seen.Free;
+  end;
+
+  SetLength(Rows, Length(Cand));
+  ChunkHint := 0;
+  Log(Format('Scanning %d files%s ...', [Length(Cand),
+    IfThen(Deep, ' (deep: hashing every file, may take a while)', '')]));
+
+  TParallel.For(0, High(Cand), procedure(I: Integer)
+  var
+    E: TFileEntry;
+    Full, Reason, Det: string;
+    LS: Int64;
+    OH: string;
+    Hint: Int64;
+  begin
+    E := Cand[I];
+    Rows[I].Path  := E.Path;
+    Rows[I].FSize := E.FSize;
+    Rows[I].MTimeMan := E.MTime;
+    Rows[I].Cache := 'no-cache';
+    Full := TPath.Combine(FileRoot, E.Path);
+    try
+      Reason := NeedsPatch(E, FileRoot, Silent, LS);
+    except
+      on Ex: Exception do begin Reason := 'ERROR'; LS := -1; Rows[I].Detail := Ex.Message; end;
+    end;
+    Rows[I].LocalSize := LS;
+    if LS >= 0 then
+      try Rows[I].MTimeLoc := TFile.GetLastWriteTimeUtc(Full); except end;
+    if OldDict <> nil then
+    begin
+      if not OldDict.TryGetValue(E.Path.ToLower, OH) then Rows[I].Cache := 'not-in-cache'
+      else if OH <> E.ObjHash then Rows[I].Cache := 'changed'
+      else Rows[I].Cache := 'same';
+      if (Reason = '') and (Rows[I].Cache <> 'same') then Reason := 'Content changed';
+    end;
+    if IsIgnored(E.Path, IgnorePatterns) then
+      Rows[I].Rua := 'IGNORED'
+    else
+      Rows[I].Rua := Reason;
+    if Deep and (LS >= 0) then
+    begin
+      Hint := ChunkHint;
+      Rows[I].Deep := DiagDeepCheck(Full, E, Hint, Det);
+      if Det <> '' then Rows[I].Detail := Det;
+      if Hint > 0 then ChunkHint := Hint;
+    end;
+  end);
+
+  RuaCount := 0; FalseNeg := 0; FalsePos := 0; DeepBad := 0; DeepSkip := 0; IgnoredN := 0;
+  CacheState := 0;
+  for var R in Rows do
+  begin
+    if R.Rua = 'IGNORED' then Inc(IgnoredN)
+    else if R.Rua <> '' then Inc(RuaCount);
+    if R.Deep = 'BAD' then Inc(DeepBad);
+    if R.Deep = 'SKIP' then Inc(DeepSkip);
+    if Deep and (R.Rua = '') and (R.Deep = 'BAD') then Inc(FalseNeg);
+    if Deep and (R.Rua <> '') and (R.Rua <> 'IGNORED') and (R.Deep = 'OK') then Inc(FalsePos);
+    if R.Cache = 'changed' then Inc(CacheState);
+  end;
+
+  Rep := TStringList.Create;
+  Tsv := TStringList.Create;
+  try
+    Rep.Add('=== Rua manifest diagnosis ===');
+    Rep.Add('Time (local):        ' + FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
+    Rep.Add('Remote manifest:     ' + ManifestHash);
+    Rep.Add('Stored version hash: ' + IfThen(StoredHash = '', '<none>', StoredHash));
+    if StoredHash = ManifestHash then
+      Rep.Add('  -> stored == remote: GUI startup/normal check reports "up to date" WITHOUT scanning files.')
+    else if StoredHash = '' then
+      Rep.Add('  -> no stored hash: every check does a full scan, but with NO cached manifest.')
+    else
+      Rep.Add('  -> stored differs from remote: update offered.');
+    if (StoredHash <> '') and (StoredHash <> ManifestHash) then
+    begin
+      if OldJSON <> '' then
+        Rep.Add(Format('Cached old manifest: FOUND (%s) -- %d files differ by content id.',
+          [CachePath, CacheState]))
+      else
+        Rep.Add('Cached old manifest: MISSING (' + CachePath + ')' + sLineBreak +
+          '  -> same-size changed files CANNOT be detected by the normal check (size-only).' + sLineBreak +
+          '  -> and if nothing differs by size, Rua then records the new hash = falsely "up to date".');
+    end;
+    Rep.Add('Install root:        ' + InstallRoot);
+    Rep.Add('File root:           ' + FileRoot);
+    Rep.Add(Format('Manifest entries:    %d  (dirs %d, unique files %d, duplicate paths %d)',
+      [Length(All), DirN, Length(Cand), Dups.Count]));
+    Rep.Add(Format('Rua WOULD LIST:      %d file(s) for update   (ignored by ignore list: %d)',
+      [RuaCount, IgnoredN]));
+    if Deep then
+    begin
+      Rep.Add(Format('Deep check:          %d file(s) really differ from manifest (SKIP/unverifiable: %d)',
+        [DeepBad, DeepSkip]));
+      Rep.Add(Format('FALSE NEGATIVES:     %d  (differ on disk, Rua would NOT list)', [FalseNeg]));
+      Rep.Add(Format('FALSE POSITIVES:     %d  (Rua lists, but content is already correct)', [FalsePos]));
+    end
+    else
+      Rep.Add('Deep check:          not run (add --deep to hash local files vs manifest part ids)');
+    Rep.Add('');
+
+    if Deep then
+    begin
+      Rep.Add('--- FALSE NEGATIVES (stale on disk, Rua skips) ---');
+      for var R in Rows do
+        if (R.Rua = '') and (R.Deep = 'BAD') then
+          Rep.Add(Format('%s | manifest %d B | local %d B | %s', [R.Path, R.FSize, R.LocalSize, R.Detail]));
+      Rep.Add('');
+      Rep.Add('--- FALSE POSITIVES (Rua lists, content OK) ---');
+      for var R in Rows do
+        if (R.Rua <> '') and (R.Rua <> 'IGNORED') and (R.Deep = 'OK') then
+          Rep.Add(Format('%s | reason %s', [R.Path, R.Rua]));
+      Rep.Add('');
+      Rep.Add('--- IGNORED but stale (never updated: ignore list wins) ---');
+      for var R in Rows do
+        if (R.Rua = 'IGNORED') and ((R.Deep = 'BAD') or (R.LocalSize < 0)) then
+          Rep.Add(Format('%s | local %d B', [R.Path, R.LocalSize]));
+      Rep.Add('');
+    end;
+
+    Rep.Add('--- Rua WOULD LIST ---');
+    for var R in Rows do
+      if (R.Rua <> '') and (R.Rua <> 'IGNORED') then
+        Rep.Add(Format('%s | %s | manifest %d B | local %d B | cache %s | deep %s',
+          [R.Path, R.Rua, R.FSize, R.LocalSize, R.Cache, IfThen(R.Deep = '', '-', R.Deep)]));
+    Rep.Add('');
+    Rep.Add('--- DUPLICATE MANIFEST PATHS ---');
+    Rep.AddStrings(Dups);
+
+    Tsv.Add('path'#9'manifest_size'#9'local_size'#9'manifest_mtime_utc'#9'local_mtime_utc'#9'rua_verdict'#9'cache'#9'deep'#9'detail');
+    for var R in Rows do
+      Tsv.Add(Format('%s'#9'%d'#9'%d'#9'%s'#9'%s'#9'%s'#9'%s'#9'%s'#9'%s',
+        [R.Path, R.FSize, R.LocalSize, Fmt(R.MTimeMan), Fmt(R.MTimeLoc),
+         IfThen(R.Rua = '', 'skip', R.Rua), R.Cache, R.Deep, R.Detail]));
+
+    TDirectory.CreateDirectory(TPath.GetDirectoryName(TPath.GetFullPath(ReportPath)));
+    Rep.SaveToFile(ReportPath, TEncoding.UTF8);
+    Tsv.SaveToFile(ChangeFileExt(ReportPath, '.tsv'), TEncoding.UTF8);
+    for var L in Rep do
+      if (Pos('---', L) = 1) then Break
+      else Log(L);
+    Log('Report: ' + ReportPath);
+    Log('Per-file table: ' + ChangeFileExt(ReportPath, '.tsv'));
+  finally
+    Rep.Free;
+    Tsv.Free;
+    Dups.Free;
+    OldDict.Free;
+  end;
 end;
 
 initialization

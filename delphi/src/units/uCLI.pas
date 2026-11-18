@@ -450,6 +450,59 @@ begin
   end;
 end;
 
+// DEBUG: Rua.exe --cli manifest-diff [--install-root DIR | --game-path Client.exe]
+//        [--deep] [--report FILE] [--profile NAME]
+// Read-only. Compares the live manifest with what Rua's scan would list.
+function CmdManifestDiff: Integer;
+var
+  ProfileName, GamePath, Root, Cookies, RemoteHash, Report: string;
+  ProductId: Integer;
+  Prof: TNexonProfile;
+begin
+  ProfileName := GetArg('profile');
+  ProductId   := StrToIntDef(GetArg('product-id'), 10200);
+  Root        := GetArg('install-root');
+  GamePath    := GetArg('game-path');
+
+  if ProfileName = '' then ProfileName := FirstProfileName;
+  Prof := FindProfile(ProfileName);
+  if (Root = '') and (GamePath = '') then GamePath := Prof.GameExe;
+
+  if Root = '' then
+  begin
+    if GamePath = '' then
+    begin
+      ConErr('Pass --install-root DIR (folder holding patchdata\) or --game-path Client.exe.');
+      Exit(EXITCODE_ERR);
+    end;
+    // Client.exe sits in <root>\appdata\ (patchdata beside appdata) or in <root> itself.
+    Root := TPath.GetDirectoryName(GamePath);
+    if not TDirectory.Exists(TPath.Combine(Root, 'patchdata')) and
+       TDirectory.Exists(TPath.Combine(TPath.GetDirectoryName(Root), 'patchdata')) then
+      Root := TPath.GetDirectoryName(Root);
+  end;
+
+  Report := GetArg('report');
+  if Report = '' then
+    Report := TPath.Combine(TPath.GetTempPath, 'rua-manifest-diff.txt');
+
+  Cookies := '';
+  if Prof.Name <> '' then Cookies := LoadCookies(Prof.Name);
+  try
+    RemoteHash := FetchManifestHash(Cookies, ProductId);
+    DiagnoseManifest(RemoteHash, Root, ProductId, Report, HasFlag('deep'),
+      procedure(const Msg: string) begin ConLn(Msg); end,
+      LoadIgnorePatterns);
+    Result := EXITCODE_OK;
+  except
+    on E: Exception do
+    begin
+      ConErr('manifest-diff failed: ' + E.Message);
+      Result := EXITCODE_ERR;
+    end;
+  end;
+end;
+
 // Named helper class for OnGameExit (TNotifyEvent = procedure of object).
 type
   TGameWaiter = class
@@ -579,6 +632,7 @@ begin
   else if Cmd = 'login-otp'    then Result := CmdLoginOtp
   else if Cmd = 'check-update' then Result := CmdCheckUpdate
   else if Cmd = 'update'       then Result := CmdUpdate
+  else if Cmd = 'manifest-diff' then Result := CmdManifestDiff
   else if Cmd = 'launch'       then Result := CmdLaunch
   else
   begin
@@ -591,6 +645,8 @@ begin
     ConLn('  login-otp      Submit OTP after MFA challenge');
     ConLn('  check-update   Check if a game update is available  (exit 0=ok, 2=update)');
     ConLn('  update         Download and apply pending game updates');
+    ConLn('  manifest-diff  DEBUG: compare live manifest vs what update would list');
+    ConLn('                 [--install-root DIR] [--deep] [--report FILE]');
     ConLn('  launch         Launch the game headlessly (waits for exit)');
     ConLn;
     ConLn('Common options:');
