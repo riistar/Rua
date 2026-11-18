@@ -10,17 +10,20 @@ uses
 
 type
   TFormProfileEdit = class(TForm)
-    LblName:          TLabel;
-    LblGameExe:       TLabel;
-    LblEmail:         TLabel;
-    LblEmailVal:      TLabel;
-    LblSession:       TLabel;
-    LblSessionVal:    TLabel;
-    LblLastUsed:      TLabel;
-    LblLastUsedVal:   TLabel;
-    EdtName:          TEdit;
-    EdtGameExe:       TEdit;
-    BtnBrowseExe:     TButton;
+    LblName:            TLabel;
+    LblGameExe:         TLabel;
+    LblEmail:           TLabel;
+    LblEmailVal:        TLabel;
+    LblSession:         TLabel;
+    LblSessionVal:      TLabel;
+    LblLastUsed:        TLabel;
+    LblLastUsedVal:     TLabel;
+    LblLaunchArgs:      TLabel;
+    LblLaunchArgsHint:  TLabel;
+    EdtName:            TEdit;
+    EdtGameExe:         TEdit;
+    EdtLaunchArgs:      TEdit;
+    BtnBrowseExe:       TButton;
     PnlBottom:        TPanel;
     BtnRefreshLogin:  TButton;
     BtnOK:            TButton;
@@ -66,8 +69,9 @@ begin
     F.FNewCookies   := '';
     F.FRefreshed    := False;
     F.FProfileName  := P.Name;
-    F.EdtName.Text    := P.Name;
-    F.EdtGameExe.Text := P.GameExe;
+    F.EdtName.Text        := P.Name;
+    F.EdtGameExe.Text     := P.GameExe;
+    F.EdtLaunchArgs.Text  := P.LaunchArgs;
     if P.Email <> '' then
       F.LblEmailVal.Caption := P.Email
     else
@@ -81,8 +85,9 @@ begin
     Result := F.ShowModal = mrOK;
     if Result then
     begin
-      P.Name    := Trim(F.EdtName.Text);
-      P.GameExe := Trim(F.EdtGameExe.Text);
+      P.Name        := Trim(F.EdtName.Text);
+      P.GameExe     := Trim(F.EdtGameExe.Text);
+      P.LaunchArgs  := Trim(F.EdtLaunchArgs.Text);
       NewCookies := F.FNewCookies;
       Refreshed  := F.FRefreshed;
     end;

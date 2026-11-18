@@ -12,14 +12,17 @@ uses
 
 type
   TNexonProfile = record
-    Name:     string;
-    UserNo:   string;
-    DeviceId: string;
-    Email:    string; // cached from account API, populated on re-login or profile edit
-    Products: TArray<Integer>;
-    LastUsed:  TDateTime;
-    NxLExpiry: TDateTime; // NxLSession expiry (0 = unknown)
-    GameExe:   string; // per-profile override for Client.exe path ('' = use global)
+    Name:          string;
+    UserNo:        string;
+    DeviceId:      string;
+    Email:         string; // cached from account API, populated on re-login or profile edit
+    Products:      TArray<Integer>;
+    LastUsed:      TDateTime;
+    NxLExpiry:     TDateTime; // NxLSession expiry (0 = unknown)
+    GameExe:       string;    // per-profile override for Client.exe path ('' = use global)
+    TotalPlaytime: Int64;     // accumulated play seconds
+    SessionCount:  Integer;   // lifetime game sessions launched
+    LaunchArgs:    string;    // extra args appended to Client.exe command line
   end;
 
   TProfileList = TObjectList<TObject>; // use generic list of records via helpers below
@@ -32,6 +35,7 @@ procedure DeleteProfile(const Name: string);
 function  LoadCookies(const ProfileName: string): string;
 procedure UpdateLastUsed(const ProfileName: string);
 procedure UpdateNxLExpiry(const ProfileName: string; Expiry: TDateTime);
+procedure UpdatePlaytime(const ProfileName: string; SessionSecs: Int64);
 
 implementation
 
@@ -72,11 +76,14 @@ begin
       for var Item in Arr do
       begin
         Obj := Item as TJSONObject;
-        P.Name     := Obj.GetValue<string>('name',      '');
-        P.UserNo   := Obj.GetValue<string>('user_no',   '');
-        P.DeviceId := Obj.GetValue<string>('device_id', '');
-        P.Email    := Obj.GetValue<string>('email',     '');
-        P.GameExe  := Obj.GetValue<string>('game_exe',  '');
+        P.Name          := Obj.GetValue<string>('name',      '');
+        P.UserNo        := Obj.GetValue<string>('user_no',   '');
+        P.DeviceId      := Obj.GetValue<string>('device_id', '');
+        P.Email         := Obj.GetValue<string>('email',     '');
+        P.GameExe       := Obj.GetValue<string>('game_exe',  '');
+        P.LaunchArgs    := Obj.GetValue<string>('launch_args', '');
+        P.TotalPlaytime := Obj.GetValue<Int64>('total_playtime', 0);
+        P.SessionCount  := Obj.GetValue<Integer>('session_count', 0);
         P.LastUsed  := 0;
         P.NxLExpiry := 0;
         P.Products  := [];
@@ -130,6 +137,12 @@ begin
         Obj.AddPair('email', P.Email);
       if P.GameExe <> '' then
         Obj.AddPair('game_exe', P.GameExe);
+      if P.LaunchArgs <> '' then
+        Obj.AddPair('launch_args', P.LaunchArgs);
+      if P.TotalPlaytime > 0 then
+        Obj.AddPair('total_playtime', TJSONNumber.Create(P.TotalPlaytime));
+      if P.SessionCount > 0 then
+        Obj.AddPair('session_count', TJSONNumber.Create(P.SessionCount));
       if P.LastUsed > 0 then
         Obj.AddPair('last_used', DateToISO8601(P.LastUsed));
       if P.NxLExpiry > 0 then
@@ -218,6 +231,23 @@ begin
     if Profiles[i].Name = ProfileName then
     begin
       Profiles[i].NxLExpiry := Expiry;
+      Break;
+    end;
+  SaveProfiles(Profiles);
+end;
+
+procedure UpdatePlaytime(const ProfileName: string; SessionSecs: Int64);
+var
+  Profiles: TArray<TNexonProfile>;
+  i:        Integer;
+begin
+  if SessionSecs <= 0 then Exit;
+  Profiles := LoadProfiles;
+  for i := 0 to High(Profiles) do
+    if Profiles[i].Name = ProfileName then
+    begin
+      Inc(Profiles[i].TotalPlaytime, SessionSecs);
+      Inc(Profiles[i].SessionCount);
       Break;
     end;
   SaveProfiles(Profiles);

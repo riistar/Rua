@@ -31,7 +31,8 @@ type
   public
     destructor Destroy; override;
     procedure Launch(const Cookies: string; ProductId: Integer;
-      const GameExePath: string; const UserNo: string = '');
+      const GameExePath: string; const UserNo: string = '';
+      const ExtraArgs: string = '');
     function IsRunning: Boolean;
     property OnGameExit: TNotifyEvent read FOnGameExit write FOnGameExit;
   end;
@@ -245,7 +246,8 @@ begin
 end;
 
 procedure TGameLauncher.Launch(const Cookies: string; ProductId: Integer;
-  const GameExePath: string; const UserNo: string = '');
+  const GameExePath: string; const UserNo: string = '';
+  const ExtraArgs: string = '');
 var
   Ticket, Hashed, GameDir, ParamStr, PidStr: string;
   Config: TGameConfig;
@@ -403,6 +405,12 @@ begin
   SubstitutePassport(Params, Ticket);
   CL       := BuildCommandLine(GameExePath, Params);
   ParamStr := Trim(Copy(CL, Length('"' + GameExePath + '"') + 1, MaxInt));
+  if ExtraArgs <> '' then
+  begin
+    if ParamStr <> '' then ParamStr := ParamStr + ' ' + ExtraArgs
+    else                   ParamStr := ExtraArgs;
+    CL := '"' + GameExePath + '" ' + ParamStr;
+  end;
   LaunchLog('Starting game client');
 
   // Bind authentication to the exact new process before any game code runs.

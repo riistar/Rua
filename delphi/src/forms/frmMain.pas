@@ -112,10 +112,15 @@ type
     FTokenTimer:      TTimer;   // 60s ticker that refreshes Token Expires column
     FCleanupOnExit:   Boolean;
     FInRefreshProfiles: Boolean; // suppress session check during auto-select
-    FNewsLoaded: Boolean;        // feed loaded once, from FormShow (after form is themed/drawn)
-    FNews:       TArray<TNewsItem>;
-    FNewsFeed:   TNewsFeed;       // rendered into NewsScroll at runtime (TNewsFeed is not DFM-streamable)
+    FNewsLoaded:        Boolean;        // feed loaded once, from FormShow (after form is themed/drawn)
+    FNews:              TArray<TNewsItem>;
+    FNewsFeed:          TNewsFeed;       // rendered into NewsScroll at runtime (TNewsFeed is not DFM-streamable)
+    FNewsRefreshTimer:  TTimer;          // background poll — redraws only when new items arrive
+    FNewsNewCount:      Integer;         // unseen new items since last tab visit (drives badge)
+    FNewsFailCount:     Integer;         // consecutive fetch failures (exponential back-off)
     FHeaderControl: THeaderPageControl; // custom PageControl swapped in at runtime (not DFM-streamable)
+    FSortManual:        Boolean;         // when True + not FSortAlpha: profiles in saved JSON order
+    FDragSrcIdx:        Integer;         // source index during a profile list drag (-1 = none)
     FHeaderTop: Integer;
     procedure SetupHeaderPageControl;
     procedure HeaderPageResize(Sender: TObject);
@@ -147,6 +152,13 @@ type
     procedure SessionTimerTick(Sender: TObject);
     function  TokenExpiryTextFor(const ProfileName: string): string;
     procedure TokenTimerTick(Sender: TObject);
+    procedure NewsRefreshTimerTick(Sender: TObject);
+    procedure PageControlChange(Sender: TObject);
+    procedure LvProfilesDragOver(Sender, Source: TObject; X, Y: Integer;
+      State: TDragState; var Accept: Boolean);
+    procedure LvProfilesDragDrop(Sender, Source: TObject; X, Y: Integer);
+    procedure ProactiveTokenRefresh;
+    function  PlaytimeText(TotalSecs: Int64): string;
     procedure WMSysCommand(var Msg: TMessage); message WM_SYSCOMMAND;
     procedure MenuForceAllClick(Sender: TObject);
     procedure DoCheckAndUpdate(AutoMode: Boolean; ForceAll: Boolean = False; VerifyMode: Boolean = False);
@@ -439,10 +451,11 @@ begin
     FAutoUpdate     := INI.ReadBool('Update', 'AutoUpdate', False);
     FAutoStart      := INI.ReadBool('Startup', 'AutoStart', False);
     FStartMinimized := INI.ReadBool('Startup', 'StartMinimized', False);
-    FTrayOnLaunch   := INI.ReadBool('Startup', 'TrayOnLaunch', False);
+    FTrayOnLaunch   := INI.ReadBool('Startup', 'TrayOnLaunch', True);
     FRememberLastProfile := INI.ReadBool('Startup', 'RememberLastProfile', False);
     FLastSelectedProfile := INI.ReadString('Startup', 'LastProfile', '');
     FSortAlpha      := INI.ReadBool('UI', 'SortAlpha', False);
+    FSortManual     := INI.ReadBool('UI', 'SortManual', False);
     FVerbose := INI.ReadBool('UI', 'Verbose', False);
     FTheme := INI.ReadString('UI', 'Theme', '');
     if IsRunningUnderWine then TStyleManager.TrySetStyle(WINE_THEME)
@@ -469,8 +482,9 @@ begin
     INI.WriteBool('Startup', 'TrayOnLaunch',   FTrayOnLaunch);
     INI.WriteBool('Startup', 'RememberLastProfile', FRememberLastProfile);
     INI.WriteString('Startup', 'LastProfile', FLastSelectedProfile);
-    INI.WriteBool('UI', 'SortAlpha', FSortAlpha);
-    INI.WriteBool('UI', 'Verbose',   FVerbose);
+    INI.WriteBool('UI', 'SortAlpha',  FSortAlpha);
+    INI.WriteBool('UI', 'SortManual', FSortManual);
+    INI.WriteBool('UI', 'Verbose',    FVerbose);
     INI.WriteString('UI', 'Theme',  FTheme);
   finally
     INI.Free;
@@ -542,7 +556,13 @@ begin
   FTokenTimer.Enabled    := True;
   FTokenTimer.OnTimer    := TokenTimerTick;
 
-  // Rebuild columns: status icon | Profile | UserNo | Last Used | Session | Token
+  // News self-refresh: polls every 15 min, redraws only when new items arrive.
+  FNewsRefreshTimer          := TTimer.Create(Self);
+  FNewsRefreshTimer.Interval := 15 * 60 * 1000;
+  FNewsRefreshTimer.Enabled  := False;   // enabled after first successful load
+  FNewsRefreshTimer.OnTimer  := NewsRefreshTimerTick;
+
+  // Rebuild columns: icon | Profile | UserNo | Last Used | Session | Token | Playtime
   LvProfiles.SmallImages := ImageList1;
   LvProfiles.Columns.Clear;
   SC := LvProfiles.Columns.Add; SC.Caption := '';          SC.Width := 24;
@@ -551,6 +571,12 @@ begin
   SC := LvProfiles.Columns.Add; SC.Caption := 'Last Used'; SC.Width := 68;
   SC := LvProfiles.Columns.Add; SC.Caption := 'Session';   SC.Width := 62;
   SC := LvProfiles.Columns.Add; SC.Caption := 'Token';     SC.Width := 62;
+  SC := LvProfiles.Columns.Add; SC.Caption := 'Playtime';  SC.Width := 60;
+
+  FDragSrcIdx := -1;
+  LvProfiles.DragMode    := dmAutomatic;
+  LvProfiles.OnDragOver  := LvProfilesDragOver;
+  LvProfiles.OnDragDrop  := LvProfilesDragDrop;
 
   // Tray icon + menu
   var MI: TMenuItem;
@@ -661,6 +687,7 @@ begin
   // The buttons (Panel1, alBottom) re-dock to the bottom edge on resize, so keep
   // the header control filling the page area above it. (We use alNone + explicit
   // bounds because a swapped-in alBottom sibling's dock slot is not predictable.)
+  NewPC.OnChange := PageControlChange;
   FHeaderTop   := OldPC.Top;
   PnlRight.OnResize := HeaderPageResize;
   HeaderPageResize(PnlRight);
@@ -760,15 +787,18 @@ var
 begin
   Profiles := LoadProfiles;
 
-  // Sort by preference: alpha ascending or last-used descending
-  var A, B: Integer;
-  for A := 0 to High(Profiles) - 1 do
-    for B := A + 1 to High(Profiles) do
-      if (FSortAlpha and (CompareText(Profiles[B].Name, Profiles[A].Name) < 0))
-         or (not FSortAlpha and (Profiles[B].LastUsed > Profiles[A].LastUsed)) then
-      begin
-        Tmp := Profiles[A]; Profiles[A] := Profiles[B]; Profiles[B] := Tmp;
-      end;
+  // Sort: alpha ascending, last-used descending, or manual JSON order
+  if not FSortManual then
+  begin
+    var A, B: Integer;
+    for A := 0 to High(Profiles) - 1 do
+      for B := A + 1 to High(Profiles) do
+        if (FSortAlpha and (CompareText(Profiles[B].Name, Profiles[A].Name) < 0))
+           or (not FSortAlpha and (Profiles[B].LastUsed > Profiles[A].LastUsed)) then
+        begin
+          Tmp := Profiles[A]; Profiles[A] := Profiles[B]; Profiles[B] := Tmp;
+        end;
+  end;
 
   LvProfiles.Items.BeginUpdate;
   try
@@ -788,6 +818,8 @@ begin
       Item.SubItems.Add(SessionTextFor(P.Name));
       // col 5: Token expiry countdown (live; updated by the token timer)
       Item.SubItems.Add(TokenExpiryTextFor(P.Name));
+      // col 6: Lifetime playtime
+      Item.SubItems.Add(PlaytimeText(P.TotalPlaytime));
     end;
   finally
     LvProfiles.Items.EndUpdate;
@@ -798,6 +830,7 @@ begin
   LvProfiles.Columns[3].Width := -2; // Last Used: LVSCW_AUTOSIZE_USEHEADER
   LvProfiles.Columns[4].Width := 62; // Session
   LvProfiles.Columns[5].Width := 66; // Token
+  LvProfiles.Columns[6].Width := -2; // Playtime: LVSCW_AUTOSIZE_USEHEADER
 
   // Auto-select last used profile (or top item) silently
   FInRefreshProfiles := True;
@@ -1073,7 +1106,7 @@ begin
   StartMinimized := FStartMinimized;
   TrayOnLaunch   := FTrayOnLaunch;
   if TFormSettings.Execute(GameExe, Theme, Verbose, AutoCheck, AutoUpdate,
-     AutoStart, StartMinimized, TrayOnLaunch, FRememberLastProfile, FSortAlpha) then
+     AutoStart, StartMinimized, TrayOnLaunch, FRememberLastProfile, FSortAlpha, FSortManual) then
   begin
     FDefaultGameExe := GameExe;
     FVerbose        := Verbose;
@@ -1744,6 +1777,82 @@ begin
   finally
     LvProfiles.Items.EndUpdate;
   end;
+  ProactiveTokenRefresh;
+end;
+
+function TFormMain.PlaytimeText(TotalSecs: Int64): string;
+var
+  H, M: Int64;
+begin
+  if TotalSecs <= 0 then
+    Result := ''
+  else
+  begin
+    H := TotalSecs div 3600;
+    M := (TotalSecs mod 3600) div 60;
+    if H > 0 then
+      Result := Format('%dh %dm', [H, M])
+    else
+      Result := Format('%dm', [M]);
+  end;
+end;
+
+// Background poll: fetch news every 15 min (with exponential back-off on failure).
+procedure TFormMain.NewsRefreshTimerTick(Sender: TObject);
+var
+  ProductId: Integer;
+begin
+  ProductId := FProductId;
+  TThread.CreateAnonymousThread(procedure
+  var
+    Fresh:  TArray<TNewsItem>;
+    OldIds: TDictionary<Int64, Boolean>;
+    I:      Integer;
+    HasNew: Boolean;
+  begin
+    try
+      Fresh := FetchNews(ProductId);
+    except
+      // Exponential back-off: 15, 30, 60 ... 120 min cap
+      TThread.Queue(nil, procedure
+      begin
+        Inc(FNewsFailCount);
+        FNewsRefreshTimer.Interval :=
+          Min(15 * (1 shl FNewsFailCount), 120) * 60000;
+      end);
+      Exit;
+    end;
+    if Length(Fresh) = 0 then Exit;
+
+    // Build set of IDs already displayed.
+    OldIds := TDictionary<Int64, Boolean>.Create;
+    try
+      for I := 0 to High(FNews) do
+        OldIds.AddOrSetValue(FNews[I].Id, True);
+      HasNew := False;
+      for I := 0 to High(Fresh) do
+        if not OldIds.ContainsKey(Fresh[I].Id) then
+        begin HasNew := True; Break; end;
+    finally
+      OldIds.Free;
+    end;
+
+    TThread.Queue(nil, procedure
+    begin
+      // Reset back-off on any successful fetch
+      FNewsFailCount := 0;
+      FNewsRefreshTimer.Interval := 15 * 60 * 1000;
+
+      if not HasNew then Exit;
+      FNews := Fresh;
+      FNewsFeed.SetNews(FNews);
+      SaveNewsCache(ProductId, Fresh);
+      // Badge: increment unseen count and update tab caption
+      Inc(FNewsNewCount);
+      if PageControl1.ActivePage <> TabSheet1 then
+        TabSheet1.Caption := ' Nexon News (' + IntToStr(FNewsNewCount) + ') ';
+    end);
+  end).Start;
 end;
 
 procedure TFormMain.GameExitHandler(Sender: TObject);
@@ -1761,6 +1870,7 @@ begin
       [FormatDateTime('hh:nn:ss', Elapsed), ExitedProfile]);
     Log(Msg);
     StatusBar.SimpleText := 'Session: ' + FormatDateTime('hh:nn:ss', Elapsed);
+    UpdatePlaytime(ExitedProfile, Round(Elapsed * 86400));
     FSessionStart   := 0;
     FSessionProfile := '';
     FSessionTimer.Enabled := False;
@@ -1779,7 +1889,7 @@ begin
   end;
   BtnLaunch.Enabled := True;
   UpdateButtons;
-  LvProfiles.Repaint; // clear the Session cell for the ended profile
+  RefreshProfiles; // update Playtime column + clear Session cell
   // Restore window if it was minimized to tray on game launch
   if FTrayOnLaunch and not Visible then
   begin
@@ -1798,11 +1908,13 @@ begin
   GamePath  := Trim(FDefaultGameExe);
   ProductId := GetProductId;
 
+  var LaunchArgs := '';
   var AllProfs := LoadProfiles;
   for var Prof in AllProfs do
     if Prof.Name = Name then
     begin
       if Trim(Prof.GameExe) <> '' then GamePath := Trim(Prof.GameExe);
+      LaunchArgs := Prof.LaunchArgs;
       Break;
     end;
 
@@ -1836,7 +1948,7 @@ begin
   end;
   try
     try
-      FLauncher.Launch(Cookies, ProductId, GamePath);
+      FLauncher.Launch(Cookies, ProductId, GamePath, '', LaunchArgs);
     except
       on E: ETicketError do
       begin
@@ -1844,13 +1956,13 @@ begin
         begin
           Log('Session expired — checking...');
           if TryRefreshCookies(Name, Cookies, procedure(Msg: string) begin Log(Msg); end) then
-            FLauncher.Launch(Cookies, ProductId, GamePath)
+            FLauncher.Launch(Cookies, ProductId, GamePath, '', LaunchArgs)
           else
           begin
             PromptReLogin(Name);
             Cookies := LoadCookies(Name);
             if Cookies <> '' then
-              FLauncher.Launch(Cookies, ProductId, GamePath)
+              FLauncher.Launch(Cookies, ProductId, GamePath, '', LaunchArgs)
             else
               raise;
           end;
@@ -1874,6 +1986,7 @@ begin
   except
     on E: EGamePlayableFailed do
     begin
+      if FTrayOnLaunch and not Visible then begin Show; WindowState := wsNormal; end;
       Log('Playable check failed: ' + E.Message);
       ShowMessage(E.Message);
       BtnLaunch.Enabled := True;
@@ -1881,6 +1994,7 @@ begin
     end;
     on E: Exception do
     begin
+      if FTrayOnLaunch and not Visible then begin Show; WindowState := wsNormal; end;
       Log('Error: ' + E.Message);
       ShowMessage('Launch failed: ' + E.Message);
       BtnLaunch.Enabled := True;
@@ -1905,26 +2019,19 @@ end;
 procedure TFormMain.StartupSessionCheck;
 var
   Profiles: TArray<TNexonProfile>;
-  N:        Integer;
 begin
-  // Read profiles from JSON directly — don't rely on listview which may have
-  // timing issues during app startup (e.g., CredReadW transient fails).
   Profiles := LoadProfiles;
-  N := Length(Profiles);
-  if N = 0 then Exit;
+  if Length(Profiles) = 0 then Exit;
 
-  // One background thread; profiles checked sequentially to avoid hammering the API.
-  TThread.CreateAnonymousThread(procedure
-  var
-    C:     string;
-    Valid: Boolean;
-    Info:  TSessionInfo;
-  begin
-    for var I := 0 to N - 1 do
+  // One thread per profile — checks run in parallel instead of sequentially.
+  for var I := 0 to High(Profiles) do
+    (procedure(const PName: string)
     begin
-      // Capture by value: anonymous methods close over loop vars by reference,
-      // causing all iterations to share the last value. Value params fix this.
-      (procedure(const PName: string; const PDev: string)
+      TThread.CreateAnonymousThread(procedure
+      var
+        C:    string;
+        Valid: Boolean;
+        Info: TSessionInfo;
       begin
         C := LoadCookies(PName);
         if C = '' then
@@ -1935,9 +2042,7 @@ begin
         end;
         Valid := TryRefreshCookies(PName, C,
           procedure(Msg: string)
-          begin
-            TThread.Queue(nil, procedure begin Log('Startup [' + PName + ']: ' + Msg); end);
-          end);
+          begin TThread.Queue(nil, procedure begin Log('Startup [' + PName + ']: ' + Msg); end); end);
         Info.Valid     := Valid;
         Info.CheckedAt := Now;
         Info.HttpCode  := 0;
@@ -1946,9 +2051,8 @@ begin
           FSessionCache.AddOrSetValue(PName, Info);
           SetProfileIcon(PName, IfThen(Valid, 1, 2));
         end);
-      end)(Profiles[I].Name, Profiles[I].DeviceId);
-    end;
-  end).Start;
+      end).Start;
+    end)(Profiles[I].Name);
 end;
 
 procedure TFormMain.LoadNews;
@@ -1990,6 +2094,8 @@ begin
         FNewsFeed.SetNews(FNews);
         SaveNewsCache(FProductId, News);
       end;
+      // Start the background refresh timer after the first network attempt.
+      FNewsRefreshTimer.Enabled := True;
     end);
   end).Start;
 end;
@@ -2101,6 +2207,98 @@ begin
     Exit;
   end;
   CheckSessionCached(Profile, Cookies);
+end;
+
+procedure TFormMain.PageControlChange(Sender: TObject);
+begin
+  if PageControl1.ActivePage = TabSheet1 then
+  begin
+    FNewsNewCount      := 0;
+    TabSheet1.Caption  := ' Nexon News ';
+  end;
+end;
+
+procedure TFormMain.LvProfilesDragOver(Sender, Source: TObject; X, Y: Integer;
+  State: TDragState; var Accept: Boolean);
+begin
+  Accept := (Source = LvProfiles) and not FSortAlpha;
+end;
+
+procedure TFormMain.LvProfilesDragDrop(Sender, Source: TObject; X, Y: Integer);
+var
+  SrcName, DstName: string;
+  Profiles:         TArray<TNexonProfile>;
+  SrcIdx, DstIdx, I: Integer;
+  TgtItem:          TListItem;
+  Tmp:              TNexonProfile;
+begin
+  if Source <> LvProfiles then Exit;
+  if LvProfiles.Selected = nil then Exit;
+  SrcName := LvProfiles.Selected.SubItems[0];
+  TgtItem := LvProfiles.GetItemAt(X, Y);
+  if TgtItem = nil then Exit;
+  DstName := TgtItem.SubItems[0];
+  if SrcName = DstName then Exit;
+
+  Profiles := LoadProfiles;
+  SrcIdx := -1; DstIdx := -1;
+  for I := 0 to High(Profiles) do
+  begin
+    if Profiles[I].Name = SrcName then SrcIdx := I;
+    if Profiles[I].Name = DstName then DstIdx := I;
+  end;
+  if (SrcIdx < 0) or (DstIdx < 0) then Exit;
+
+  Tmp := Profiles[SrcIdx];
+  if SrcIdx < DstIdx then
+    for I := SrcIdx to DstIdx - 1 do Profiles[I] := Profiles[I + 1]
+  else
+    for I := SrcIdx downto DstIdx + 1 do Profiles[I] := Profiles[I - 1];
+  Profiles[DstIdx] := Tmp;
+
+  FSortManual := True;
+  SaveProfiles(Profiles);
+  SaveConfig;
+  RefreshProfiles;
+end;
+
+procedure TFormMain.ProactiveTokenRefresh;
+var
+  Profiles: TArray<TNexonProfile>;
+begin
+  Profiles := LoadProfiles;
+  for var P in Profiles do
+  begin
+    // Skip TPA accounts (NxLExpiry=0) and already-expired tokens
+    if (P.NxLExpiry <= 0) or (P.NxLExpiry < Now) then Continue;
+    // Only refresh within 10 minutes of expiry
+    if MinutesBetween(P.NxLExpiry, Now) >= 10 then Continue;
+    var PName  := P.Name;
+    var PDevId := P.DeviceId;
+    TThread.CreateAnonymousThread(procedure
+    var
+      C:        string;
+      NxLSess:  string;
+      Status:   Integer;
+      Expiry:   TDateTime;
+      Refreshed: string;
+    begin
+      C := LoadCookies(PName);
+      if C = '' then Exit;
+      NxLSess := ExtractCookieValue(C, 'NxLSession');
+      if (NxLSess = '') or (PDevId = '') then Exit;
+      Status  := 0;
+      Expiry  := 0;
+      Refreshed := AutoLoginRefresh(NxLSess, PDevId, Status, Expiry);
+      if Refreshed = '' then Exit;
+      TThread.Queue(nil, procedure
+      begin
+        SaveRefreshedCookies(PName, Refreshed);
+        if Expiry > 0 then UpdateNxLExpiry(PName, Expiry);
+        Log('Proactive token refresh OK: ' + PName);
+      end);
+    end).Start;
+  end;
 end;
 
 

@@ -3,7 +3,7 @@ object FormProfileEdit: TFormProfileEdit
   Top = 0
   BorderStyle = bsDialog
   Caption = 'Profile'
-  ClientHeight = 205
+  ClientHeight = 232
   ClientWidth = 430
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
@@ -95,14 +95,40 @@ object FormProfileEdit: TFormProfileEdit
     TabOrder = 2
     OnClick = BtnBrowseExeClick
   end
+  object LblLaunchArgs: TLabel
+    Left = 12
+    Top = 155
+    Width = 80
+    Height = 15
+    Caption = '&Launch Args:'
+    FocusControl = EdtLaunchArgs
+  end
+  object LblLaunchArgsHint: TLabel
+    Left = 104
+    Top = 155
+    Width = 314
+    Height = 15
+    AutoSize = False
+    Caption = 'Extra flags appended to Client.exe (e.g. -ChannelCode KR)'
+    Font.Color = clGrayText
+    Font.Height = -11
+    ParentFont = False
+  end
+  object EdtLaunchArgs: TEdit
+    Left = 104
+    Top = 172
+    Width = 314
+    Height = 23
+    TabOrder = 3
+  end
   object PnlBottom: TPanel
     Left = 0
-    Top = 165
+    Top = 192
     Width = 430
     Height = 40
     Align = alBottom
     BevelOuter = bvNone
-    TabOrder = 3
+    TabOrder = 4
     object BtnRefreshLogin: TButton
       Left = 12
       Top = 8

@@ -130,6 +130,16 @@ object FormSettings: TFormSettings
     Height = 19
     Caption = 'Sort profiles &A-Z'
     TabOrder = 11
+    OnClick = ChkSortAlphaClick
+  end
+  object ChkSortManual: TCheckBox
+    Left = 262
+    Top = 220
+    Width = 176
+    Height = 19
+    Caption = '&Manual order (drag to reorder)'
+    TabOrder = 17
+    OnClick = ChkSortManualClick
   end
   object LblIgnore: TLabel
     Left = 12

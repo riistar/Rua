@@ -24,6 +24,7 @@ type
     ChkTrayOnLaunch: TCheckBox;
     ChkRememberLastProfile: TCheckBox;
     ChkSortAlpha: TCheckBox;
+    ChkSortManual: TCheckBox;
     LblIgnore:      TLabel;
     MemoIgnore:     TMemo;
     LblHooks:       TLabel;
@@ -41,6 +42,8 @@ type
     procedure FormCreate(Sender: TObject);
     procedure BtnBrowseExeClick(Sender: TObject);
     procedure CmbThemeChange(Sender: TObject);
+    procedure ChkSortAlphaClick(Sender: TObject);
+    procedure ChkSortManualClick(Sender: TObject);
   private
     FOriginalTheme: string;
     procedure LoadStyleNames;
@@ -55,7 +58,8 @@ type
       var StartMinimized: Boolean;
       var TrayOnLaunch:  Boolean;
       var RememberLastProfile: Boolean;
-      var SortAlpha:     Boolean
+      var SortAlpha:     Boolean;
+      var SortManual:    Boolean
     ): Boolean;
   end;
 
@@ -73,7 +77,8 @@ class function TFormSettings.Execute(
   var StartMinimized: Boolean;
   var TrayOnLaunch:  Boolean;
   var RememberLastProfile: Boolean;
-  var SortAlpha:     Boolean
+  var SortAlpha:     Boolean;
+  var SortManual:    Boolean
 ): Boolean;
 var
   F: TFormSettings;
@@ -93,6 +98,8 @@ begin
     F.ChkTrayOnLaunch.Checked  := TrayOnLaunch;
     F.ChkRememberLastProfile.Checked := RememberLastProfile;
     F.ChkSortAlpha.Checked     := SortAlpha;
+    F.ChkSortManual.Checked    := SortManual and not SortAlpha;
+    F.ChkSortManual.Enabled    := not SortAlpha;
     F.MemoIgnore.Lines.Text    := string.Join(sLineBreak, LoadIgnorePatterns);
     F.EdtBeforePatch.Text      := H.BeforePatch;
     F.EdtAfterPatch.Text       := H.AfterPatch;
@@ -114,6 +121,7 @@ begin
       TrayOnLaunch  := F.ChkTrayOnLaunch.Checked;
       RememberLastProfile := F.ChkRememberLastProfile.Checked;
       SortAlpha     := F.ChkSortAlpha.Checked;
+      SortManual    := F.ChkSortManual.Checked and not F.ChkSortAlpha.Checked;
       if F.CmbTheme.ItemIndex >= 0 then
         Theme := F.CmbTheme.Items[F.CmbTheme.ItemIndex];
       SaveIgnorePatterns(F.MemoIgnore.Lines.ToStringArray);
@@ -180,6 +188,23 @@ procedure TFormSettings.CmbThemeChange(Sender: TObject);
 begin
   if CmbTheme.ItemIndex >= 0 then
     TStyleManager.TrySetStyle(CmbTheme.Items[CmbTheme.ItemIndex]);
+end;
+
+procedure TFormSettings.ChkSortAlphaClick(Sender: TObject);
+begin
+  if ChkSortAlpha.Checked then
+  begin
+    ChkSortManual.Checked := False;
+    ChkSortManual.Enabled := False;
+  end
+  else
+    ChkSortManual.Enabled := True;
+end;
+
+procedure TFormSettings.ChkSortManualClick(Sender: TObject);
+begin
+  if ChkSortManual.Checked then
+    ChkSortAlpha.Checked := False;
 end;
 
 procedure TFormSettings.BtnBrowseExeClick(Sender: TObject);
