@@ -1995,7 +1995,9 @@ begin
     if not RunHookCmd(BLHook, Name) then
       Log('Hook [BeforeLaunch] failed to start (error ' + IntToStr(GetLastError) + ')');
   end;
-  BtnLaunch.Enabled := False;
+  // Default: one client at a time. --multi: keep Launch available for more sessions.
+  if not MultiClientMode then
+    BtnLaunch.Enabled := False;
   StatusBar.SimpleText := 'Game running — ' + Name;
   if FTrayOnLaunch and not FStartMinimized then
   begin

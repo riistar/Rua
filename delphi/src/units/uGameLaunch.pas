@@ -2,40 +2,83 @@ unit uGameLaunch;
 { Uses a per-launch, user-restricted memory mapping for ticket handoff.
   Starts the game suspended so its exact process can be authorized by the pipe
   before it runs. No ticket file is written. The mapping is cleared on failure
-  or after shim initialization (at most 30 seconds). }
+  or after shim initialization (at most 30 seconds).
+
+  One launcher, many sessions: every Launch creates its own TGameSession that
+  owns that client's stub process, events, verified handles and pipe
+  registration. The deployed stub/shim files are shared and reused (see
+  TDeployedFiles and DeployVerified); a session never touches another
+  session's resources. See docs/MULTI_CLIENT.md. }
 
 interface
 
 uses
-  System.SysUtils, System.Classes,
+  System.SysUtils, System.Classes, System.SyncObjs, System.Generics.Collections,
   uProtocol, uPipeServer, uNexonAPI;
 
 type
+  // The deployed nexon_client.exe / bin\nexon_x64.dll copies. Identical signed
+  // binaries for every session, so they are created at most once and reused.
+  TDeployedFiles = class
+  private
+    FLock:     TCriticalSection;
+    FRefs:     Integer;   // sessions currently using the files
+    FStubPath: string;
+    FShimPath: string;
+    FOwned:    Boolean;   // this process created at least one of them
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Enter;
+    procedure Leave;
+    procedure Attach;
+    procedure NoteCreated(const Path: string; IsStub: Boolean);
+    procedure Detach; // last session out removes files this process created
+  end;
+
+  TGameSession = class
+  public
+    Id:          Integer;
+    Shared:      TDeployedFiles;
+    Attached:    Boolean;
+    Pipe:        TPipeRegistration;
+    StubProcess: THandle;
+    StubExitEvent: THandle;
+    // Held for the whole session: the deployed files deny writes/deletes and
+    // the folders deny deletes/renames, so nothing can be swapped after checks.
+    StubFile:    THandle;
+    ShimFile:    THandle;
+    OurDirLock:  THandle;
+    BinDirLock:  THandle;
+    StubCreated: Boolean; // this session created the deployed stub (else reused)
+    ShimCreated: Boolean;
+    constructor Create(AShared: TDeployedFiles; AId: Integer);
+    destructor Destroy; override;
+    procedure Log(const Msg: string);
+    procedure StopPipe;
+    procedure Cleanup; // session-owned resources only
+  end;
+
   TGameLauncher = class
   private
-    FPipeThread:    TPipeServerThread;
-    FShimPath:      string;   // deployed real nexon_x64.dll
-    FStubPath:      string;   // nexon_client.exe stub copy
-    FStubProcess:   THandle;
-    FStubExitEvent: THandle;
-    // Held for the whole session: the deployed copies deny writes/deletes and
-    // the folders deny deletes/renames, so nothing can be swapped after checks.
-    FStubFile:      THandle;
-    FShimFile:      THandle;
-    FOurDirLock:    THandle;
-    FBinDirLock:    THandle;
-    FGameRunning:   Boolean;
-    FOnGameExit:    TNotifyEvent;
-    procedure StopPipe;
-    procedure CleanupStub;
+    FShared:   TDeployedFiles;
+    FSessions: TList<TGameSession>; // sessions whose game is running
+    FLock:     TCriticalSection;
+    FNextId:   Integer;
+    FOnGameExit: TNotifyEvent;
   public
+    constructor Create;
     destructor Destroy; override;
     procedure Launch(const Cookies: string; ProductId: Integer;
       const GameExePath: string; const UserNo: string = '';
       const ExtraArgs: string = '');
     function IsRunning: Boolean;
+    function RunningCount: Integer;
     property OnGameExit: TNotifyEvent read FOnGameExit write FOnGameExit;
   end;
+
+// True when started with --multi: a second launcher process is not refused.
+function MultiClientMode: Boolean;
 
 implementation
 
@@ -55,6 +98,20 @@ begin
   if GElevated < 0 then
     GElevated := Ord(IsProcessElevated);
   Result := GElevated = 1;
+end;
+
+function MultiClientMode: Boolean;
+var
+  I: Integer;
+  P: string;
+begin
+  for I := 1 to ParamCount do
+  begin
+    P := ParamStr(I);
+    if SameText(P, '--multi') or SameText(P, '-multi') or SameText(P, '/multi') then
+      Exit(True);
+  end;
+  Result := False;
 end;
 
 procedure LaunchLog(const Msg: string);
@@ -151,26 +208,65 @@ begin
   end;
 end;
 
-// Copies Src to Dst without following an existing link at Dst, then reopens the
-// copy denying writes/deletes and confirms it is byte-identical to Src. The
-// returned handle keeps it that way until closed; it still allows the reads and
-// image loads the stub/game need.
-function DeployVerified(const Src, Dst: string): THandle;
+// Reuse rule: an existing, non-link Dst whose SHA-256 equals SrcHash is opened
+// read-only (denying writes/deletes) and returned as-is; nothing is deleted or
+// copied, so a file another session is running or has mapped is never touched.
+// Returns INVALID_HANDLE_VALUE when Dst is missing, a link, or different (the
+// caller then replaces it; if that is impossible because it is in use, the
+// replace fails closed). An in-use Dst that cannot even be opened raises.
+function TryReuseDeployed(const Dst, SrcHash: string): THandle;
+var
+  Info: TByHandleFileInformation;
+  Err:  DWORD;
+begin
+  Result := INVALID_HANDLE_VALUE;
+  if GetFileAttributes(PChar(Dst)) = INVALID_FILE_ATTRIBUTES then Exit;
+  Result := CreateFile(PChar(Dst), GENERIC_READ, FILE_SHARE_READ, nil, OPEN_EXISTING,
+    FILE_FLAG_OPEN_REPARSE_POINT, 0);
+  if Result = INVALID_HANDLE_VALUE then
+  begin
+    Err := GetLastError;
+    if (Err = ERROR_FILE_NOT_FOUND) or (Err = ERROR_PATH_NOT_FOUND) then Exit;
+    RaiseLastOSError(Err);
+  end;
+  try
+    if not GetFileInformationByHandle(Result, Info) then RaiseLastOSError;
+    // A link is replaced, never reused (DeleteFile removes the link itself).
+    if ((Info.dwFileAttributes and FILE_ATTRIBUTE_REPARSE_POINT) = 0) and
+       SameText(Sha256OfHandle(Result), SrcHash) then
+      Exit;
+  except
+    CloseHandle(Result);
+    raise;
+  end;
+  CloseHandle(Result);
+  Result := INVALID_HANDLE_VALUE;
+end;
+
+// Makes Dst a verified copy of Src and returns a handle that keeps it that way
+// until closed (still allows the reads and image loads the stub/game need).
+// Created = False when an identical existing file was reused.
+function DeployVerified(const Src, Dst: string; out Created: Boolean): THandle;
 var
   SrcHandle: THandle;
   SrcHash:   string;
 begin
+  Created := False;
   SrcHandle := CreateFile(PChar(Src), GENERIC_READ, FILE_SHARE_READ, nil, OPEN_EXISTING,
     FILE_FLAG_OPEN_REPARSE_POINT, 0);
   if SrcHandle = INVALID_HANDLE_VALUE then RaiseLastOSError;
   try
     RefuseLink(SrcHandle, Src);
     SrcHash := Sha256OfHandle(SrcHandle);
-    // DeleteFile removes a link itself, never its target. CopyFile then refuses
-    // to overwrite anything that reappears, so a race fails closed.
+    Result := TryReuseDeployed(Dst, SrcHash);
+    if Result <> INVALID_HANDLE_VALUE then Exit;
+    // Missing or different: replace. DeleteFile removes a link itself, never its
+    // target, and fails (closed) while a different file is still in use. CopyFile
+    // then refuses to overwrite anything that reappears, so a race fails closed.
     if (GetFileAttributes(PChar(Dst)) <> INVALID_FILE_ATTRIBUTES) and not DeleteFile(PChar(Dst)) then
       RaiseLastOSError;
     if not CopyFile(PChar(Src), PChar(Dst), True) then RaiseLastOSError;
+    Created := True;
   finally
     CloseHandle(SrcHandle);
   end;
@@ -188,61 +284,154 @@ begin
   end;
 end;
 
-{ TGameLauncher }
+{ TDeployedFiles }
 
-procedure TGameLauncher.StopPipe;
+constructor TDeployedFiles.Create;
 begin
-  if FPipeThread <> nil then
-  begin
-    FPipeThread.StopServer;
-    FPipeThread.Terminate;
-    FPipeThread.WaitFor;
-    FreeAndNil(FPipeThread);
+  inherited;
+  FLock := TCriticalSection.Create;
+end;
+
+destructor TDeployedFiles.Destroy;
+begin
+  FLock.Free;
+  inherited;
+end;
+
+procedure TDeployedFiles.Enter;
+begin
+  FLock.Enter;
+end;
+
+procedure TDeployedFiles.Leave;
+begin
+  FLock.Leave;
+end;
+
+procedure TDeployedFiles.Attach;
+begin
+  FLock.Enter;
+  try Inc(FRefs); finally FLock.Leave; end;
+end;
+
+procedure TDeployedFiles.NoteCreated(const Path: string; IsStub: Boolean);
+begin
+  FLock.Enter;
+  try
+    FOwned := True;
+    if IsStub then FStubPath := Path else FShimPath := Path;
+  finally
+    FLock.Leave;
   end;
 end;
 
-procedure TGameLauncher.CleanupStub;
+procedure TDeployedFiles.Detach;
 begin
-  if FStubExitEvent <> 0 then
-  begin
-    SetEvent(FStubExitEvent);
-    CloseHandle(FStubExitEvent);
-    FStubExitEvent := 0;
+  FLock.Enter;
+  try
+    if FRefs > 0 then Dec(FRefs);
+    if FRefs = 0 then
+    begin
+      // Last session out. Files still held by another process (its verified
+      // handles deny deletes) simply fail to delete and stay for that process.
+      if FOwned then
+      begin
+        if FShimPath <> '' then try TFile.Delete(FShimPath); except end;
+        if FStubPath <> '' then try TFile.Delete(FStubPath); except end;
+      end;
+      FOwned := False;
+      FShimPath := '';
+      FStubPath := '';
+    end;
+  finally
+    FLock.Leave;
   end;
-  if FStubProcess <> 0 then
+end;
+
+{ TGameSession }
+
+constructor TGameSession.Create(AShared: TDeployedFiles; AId: Integer);
+begin
+  inherited Create;
+  Shared := AShared;
+  Id := AId;
+end;
+
+destructor TGameSession.Destroy;
+begin
+  StopPipe;
+  Cleanup;
+  inherited;
+end;
+
+procedure TGameSession.Log(const Msg: string);
+begin
+  LaunchLog('[s' + IntToStr(Id) + '] ' + Msg);
+end;
+
+procedure TGameSession.StopPipe;
+begin
+  FreeAndNil(Pipe); // ends only this session's connections
+end;
+
+procedure TGameSession.Cleanup;
+begin
+  if StubExitEvent <> 0 then
   begin
-    if WaitForSingleObject(FStubProcess, 2000) = WAIT_TIMEOUT then
-      TerminateProcess(FStubProcess, 0);
-    WaitForSingleObject(FStubProcess, 2000);
-    CloseHandle(FStubProcess);
-    FStubProcess := 0;
+    SetEvent(StubExitEvent);
+    CloseHandle(StubExitEvent);
+    StubExitEvent := 0;
   end;
-  CloseIfOpen(FStubFile);
-  CloseIfOpen(FShimFile);
-  if FShimPath <> '' then
+  if StubProcess <> 0 then
   begin
-    try TFile.Delete(FShimPath); except end;
-    FShimPath := '';
+    if WaitForSingleObject(StubProcess, 2000) = WAIT_TIMEOUT then
+      TerminateProcess(StubProcess, 0);
+    WaitForSingleObject(StubProcess, 2000);
+    CloseHandle(StubProcess);
+    StubProcess := 0;
   end;
-  if FStubPath <> '' then
+  // Release this session's handles first; the shared files are removed only when
+  // no session uses them any more (Detach), never while another session runs.
+  CloseIfOpen(StubFile);
+  CloseIfOpen(ShimFile);
+  if Attached then
   begin
-    try TFile.Delete(FStubPath); except end;
-    FStubPath := '';
+    Attached := False;
+    Shared.Detach;
   end;
-  CloseIfOpen(FBinDirLock);
-  CloseIfOpen(FOurDirLock);
+  CloseIfOpen(BinDirLock);
+  CloseIfOpen(OurDirLock);
+end;
+
+{ TGameLauncher }
+
+constructor TGameLauncher.Create;
+begin
+  inherited;
+  FShared   := TDeployedFiles.Create;
+  FSessions := TList<TGameSession>.Create;
+  FLock     := TCriticalSection.Create;
 end;
 
 destructor TGameLauncher.Destroy;
 begin
-  StopPipe;
-  CleanupStub;
+  // Running sessions are owned by their monitor threads; nothing of theirs is
+  // torn down here (a launcher never touches a live session).
+  FLock.Free;
+  FSessions.Free;
+  FShared.Free;
   inherited;
+end;
+
+function TGameLauncher.RunningCount: Integer;
+begin
+  FLock.Enter;
+  try Result := FSessions.Count; finally FLock.Leave; end;
 end;
 
 function TGameLauncher.IsRunning: Boolean;
 begin
-  Result := FGameRunning;
+  Result := RunningCount > 0;
 end;
 
 procedure TGameLauncher.Launch(const Cookies: string; ProductId: Integer;
@@ -268,18 +457,32 @@ var
   ClientFile: THandle;
   Refusal: string;
   SEI: TShellExecuteInfo;
+  S: TGameSession;
+  Created: Boolean;
+  SessionId: Integer;
 begin
   PidStr  := IntToStr(ProductId);
   GameDir := ExtractFileDir(GameExePath);
   OurDir  := ExtractFileDir(GetModuleName(0));
 
-  // 1. Clean up previous deployment
-  CleanupStub;
+  FLock.Enter;
+  try
+    Inc(FNextId);
+    SessionId := FNextId;
+  finally
+    FLock.Leave;
+  end;
+  // This session's own state. Nothing of any other running session is touched.
+  S := TGameSession.Create(FShared, SessionId);
+  S.Log('Session start');
 
   // Validate deployment before requesting an authentication ticket.
   if not TFile.Exists(OurDir + '\nxl3p_stub.exe') or
      not TFile.Exists(OurDir + '\nxl3p_shim.dll') then
+  begin
+    S.Free;
     raise Exception.Create('Rua launch helpers are missing. Repair the installation before signing in.');
+  end;
 
   // Only Nexon's signed Client.exe receives the launch ticket (and, elevated,
   // administrator rights). The handle denies writes until the game has started,
@@ -287,10 +490,15 @@ begin
   ClientFile := CreateFile(PChar(GameExePath), GENERIC_READ, FILE_SHARE_READ, nil,
     OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, 0);
   if ClientFile = INVALID_HANDLE_VALUE then
-    raise Exception.Create('Mabinogi Client.exe could not be opened: ' + SysErrorMessage(GetLastError));
+  begin
+    ErrorCode := GetLastError;
+    S.Free;
+    raise Exception.Create('Mabinogi Client.exe could not be opened: ' + SysErrorMessage(ErrorCode));
+  end;
   PrivateTicket := nil;
   ShimReadyEv := 0;
   ZeroMemory(@GamePI, SizeOf(GamePI));
+  try
   try
   RefuseLink(ClientFile, GameExePath);
   if not IsNexonSignedClient(GameExePath, ClientFile, Refusal) then
@@ -301,11 +509,11 @@ begin
   var AuthCookies := FetchAccountAndMerge(Cookies);
   // Strip loopback if account returned set-cookie with refreshed tokens
   if AuthCookies = Cookies then
-    LaunchLog('FetchAccount: no new cookies')
+    S.Log('FetchAccount: no new cookies')
   else
-    LaunchLog('FetchAccount: Set-Cookie merged');
+    S.Log('FetchAccount: Set-Cookie merged');
   AuthCookies := FetchAccess(AuthCookies, PidStr, AccessInfo);
-  LaunchLog('FetchAccess: HTTP=' + IntToStr(AccessInfo.HttpStatus) + ' isPlayable=' +
+  S.Log('FetchAccess: HTTP=' + IntToStr(AccessInfo.HttpStatus) + ' isPlayable=' +
     BoolToStr(AccessInfo.IsPlayable, True));
   if AccessInfo.HttpStatus = 401 then
     raise ETicketError.Create('Session expired (401). Re-login and try again.')
@@ -324,27 +532,38 @@ begin
     else
       raise ETicketError.CreateFmt('Product not playable (HTTP %d)', [PlayableStatus]);
   end;
-  LaunchLog('CheckPlayable: HTTP=' + IntToStr(PlayableStatus) + ' OK');
+  S.Log('CheckPlayable: HTTP=' + IntToStr(PlayableStatus) + ' OK');
 
   Ticket := FetchTicket(AuthCookies, ProductId);
   Hashed := HashUserNo(UserNo);
-  LaunchLog('Launch ticket received');
+  S.Log('Launch ticket received');
 
-  try
   PrivateTicket := TPrivateTicket.Create(Ticket);
+  S.Log('Ticket mapping: ' + PrivateTicket.Name);
 
-  // 4. Deploy stub as nexon_client.exe in our dir (verified copy, held locked)
-  FOurDirLock := LockFolder(OurDir);
+  // 4. Deploy stub as nexon_client.exe in our dir: create-or-reuse a verified
+  // copy, held locked by this session's own handle.
+  S.OurDirLock := LockFolder(OurDir);
   StubSrc := OurDir + '\nxl3p_stub.exe';
   StubDst := OurDir + '\nexon_client.exe';
   if not TFile.Exists(StubSrc) then
     raise Exception.CreateFmt('nxl3p_stub.exe not found: %s', [StubSrc]);
-  FStubFile := DeployVerified(StubSrc, StubDst);
-  FStubPath := StubDst;
-  LaunchLog('Stub deployed: ' + StubDst);
+  FShared.Enter; // serialize create-or-reuse across concurrent launches
+  try
+    FShared.Attach;
+    S.Attached := True;
+    S.StubFile := DeployVerified(StubSrc, StubDst, Created);
+    S.StubCreated := Created;
+    if Created then FShared.NoteCreated(StubDst, True);
+  finally
+    FShared.Leave;
+  end;
+  if S.StubCreated then
+    S.Log('Stub deployed (created): ' + StubDst)
+  else
+    S.Log('Stub reused (identical, verified): ' + StubDst);
 
   // 5. Create named events BEFORE spawning stub/game.
-  if FStubExitEvent <> 0 then begin CloseHandle(FStubExitEvent); FStubExitEvent := 0; end;
   ZeroMemory(@SA, SizeOf(SA));
   SA.nLength := SizeOf(SA);
   SA.lpSecurityDescriptor := UserOnlyDescriptor;
@@ -352,11 +571,11 @@ begin
     if CreateGUID(StubGuid) <> 0 then
       raise Exception.Create('Could not create launch event identifier');
     StubEventName := 'Local\Rua.Stub.' + GUIDToString(StubGuid);
-    FStubExitEvent := CreateEventW(@SA, True, False, PWideChar(StubEventName));
+    S.StubExitEvent := CreateEventW(@SA, True, False, PWideChar(StubEventName));
     ErrorCode := GetLastError;
-    if FStubExitEvent = 0 then RaiseLastOSError(ErrorCode);
+    if S.StubExitEvent = 0 then RaiseLastOSError(ErrorCode);
     if ErrorCode = ERROR_ALREADY_EXISTS then begin
-      CloseHandle(FStubExitEvent); FStubExitEvent := 0;
+      CloseHandle(S.StubExitEvent); S.StubExitEvent := 0;
       raise Exception.Create('Another launcher owns the stub event');
     end;
     ShimReadyEv := CreateEventW(@SA, True, False, PWideChar(PrivateTicket.Name + '.Ready'));
@@ -367,8 +586,10 @@ begin
   finally
     LocalFree(HLOCAL(SA.lpSecurityDescriptor));
   end;
+  S.Log('Stub event: ' + StubEventName);
 
-  // 6. Spawn stub
+  // 6. Spawn this session's own stub process from the shared file. The stub is
+  // the signed parent the game expects; each session has its own.
   ZeroMemory(@SI, SizeOf(SI));
   SI.cb := SizeOf(SI);
   CmdLine := '"' + StubDst + '" --exit-event "' + StubEventName +
@@ -379,25 +600,34 @@ begin
       CREATE_NO_WINDOW, nil, nil, SI, PI) then
   begin
     CloseHandle(PI.hThread);
-    FStubProcess := PI.hProcess;
-    LaunchLog('Stub spawned PID=' + IntToStr(PI.dwProcessId));
-    if WaitForSingleObject(FStubProcess, 300) <> WAIT_TIMEOUT then
+    S.StubProcess := PI.hProcess;
+    S.Log('Stub spawned PID=' + IntToStr(PI.dwProcessId));
+    if WaitForSingleObject(S.StubProcess, 300) <> WAIT_TIMEOUT then
       raise Exception.Create('Rua compatibility helper exited during setup');
   end
   else
     raise Exception.CreateFmt('Stub spawn failed err=%d', [GetLastError]);
 
-  // 7. Deploy nxl3p_shim.dll → {our_dir}\bin\nexon_x64.dll
+  // 7. Deploy nxl3p_shim.dll → {our_dir}\bin\nexon_x64.dll (create-or-reuse).
   ShimSrc := OurDir + '\nxl3p_shim.dll';
   BinDir  := OurDir + '\bin';
   ShimDst := BinDir + '\nexon_x64.dll';
   if not TFile.Exists(ShimSrc) then
     raise Exception.Create('nxl3p_shim.dll not found next to launcher. Rebuild the shim.');
   TDirectory.CreateDirectory(BinDir);
-  FBinDirLock := LockFolder(BinDir); // refuses a junction in place of bin\
-  FShimFile := DeployVerified(ShimSrc, ShimDst);
-  FShimPath := ShimDst;
-  LaunchLog('Shim deployed: ' + ShimDst);
+  S.BinDirLock := LockFolder(BinDir); // refuses a junction in place of bin\
+  FShared.Enter;
+  try
+    S.ShimFile := DeployVerified(ShimSrc, ShimDst, Created);
+    S.ShimCreated := Created;
+    if Created then FShared.NoteCreated(ShimDst, False);
+  finally
+    FShared.Leave;
+  end;
+  if S.ShimCreated then
+    S.Log('Shim deployed (created): ' + ShimDst)
+  else
+    S.Log('Shim reused (identical, verified): ' + ShimDst);
 
   // 8. Game params
   Config := FetchGameConfig(AuthCookies, ProductId);
@@ -411,7 +641,7 @@ begin
     else                   ParamStr := ExtraArgs;
     CL := '"' + GameExePath + '" ' + ParamStr;
   end;
-  LaunchLog('Starting game client');
+  S.Log('Starting game client');
 
   // Bind authentication to the exact new process before any game code runs.
   ChildEnvironment := TicketEnvironment(PrivateTicket.Name);
@@ -427,7 +657,7 @@ begin
     // Client.exe has a highestAvailable manifest. ShellExecuteEx handles the UAC
     // prompt; the child is spawned by AppInfo and does NOT inherit our env block,
     // so pass the mapping name via --rua-map on the command line instead.
-    LaunchLog('CreateProcessW: ERROR_ELEVATION_REQUIRED, falling back to ShellExecuteEx');
+    S.Log('CreateProcessW: ERROR_ELEVATION_REQUIRED, falling back to ShellExecuteEx');
     ParamStr := ParamStr + ' --rua-map ' + PrivateTicket.Name;
     ZeroMemory(@SEI, SizeOf(SEI));
     SEI.cbSize       := SizeOf(SEI);
@@ -439,19 +669,18 @@ begin
     if not ShellExecuteExW(@SEI) then RaiseLastOSError;
     GamePI.hProcess := SEI.hProcess;
     GamePI.hThread  := 0;
-    StopPipe;
-    FPipeThread := TPipeServerThread.Create(Ticket, Hashed, ProductId, GamePI.hProcess);
-    FPipeThread.Start;
+    S.StopPipe;
+    S.Pipe := TPipeRegistration.Create(Ticket, Hashed, ProductId, GamePI.hProcess);
   end
   else
   begin
     // Suspended path: pipe authorized to the exact PID before first game instruction.
-    StopPipe;
-    FPipeThread := TPipeServerThread.Create(Ticket, Hashed, ProductId, GamePI.hProcess);
-    FPipeThread.Start;
+    S.StopPipe;
+    S.Pipe := TPipeRegistration.Create(Ticket, Hashed, ProductId, GamePI.hProcess);
     if ResumeThread(GamePI.hThread) = DWORD(-1) then RaiseLastOSError;
     CloseHandle(GamePI.hThread); GamePI.hThread := 0;
   end;
+  S.Log('Game pid=' + IntToStr(GetProcessId(GamePI.hProcess)) + ' registered on ticket pipe');
   // Wait for the shim, but also watch the game process: if Client.exe dies during
   // startup (error dialog / crash) fail immediately instead of blocking 120s.
   var WaitHandles: array[0..1] of THandle;
@@ -473,19 +702,16 @@ begin
     raise Exception.Create('Secure game initialization timed out');
   FreeAndNil(PrivateTicket);
   CloseHandle(ShimReadyEv); ShimReadyEv := 0;
-  FGameRunning := True;
 
-  // 11. Background thread: wait game exit → cleanup
-  var TKillProc    := FStubProcess;   FStubProcess   := 0;
-  var TKillEvent   := FStubExitEvent; FStubExitEvent := 0;
-  var TKillPath    := FStubPath;      FStubPath      := '';
-  var TKillShim    := FShimPath;      FShimPath      := '';
-  var TStubFile    := FStubFile;      FStubFile      := 0;
-  var TShimFile    := FShimFile;      FShimFile      := 0;
-  var TBinLock     := FBinDirLock;    FBinDirLock    := 0;
-  var TDirLock     := FOurDirLock;    FOurDirLock    := 0;
-  var TGameProc    := GamePI.hProcess;
+  FLock.Enter;
+  try FSessions.Add(S); finally FLock.Leave; end;
 
+  // 11. Background thread: wait game exit → clean up THIS session only. It owns
+  // S and the game handle from here on.
+  var TGameProc := GamePI.hProcess;
+  GamePI.hProcess := 0;
+  var TSession := S;
+  S := nil;
   TThread.CreateAnonymousThread(procedure
   var Code: DWORD;
   begin
@@ -495,36 +721,37 @@ begin
       Code := 0;
       GetExitCodeProcess(TGameProc, Code);
       CloseHandle(TGameProc);
-      LaunchLog('Client.exe exited code=' + IntToStr(Code));
+      TSession.Log('Client.exe exited code=' + IntToStr(Code));
     end;
 
-    if TKillEvent <> 0 then begin SetEvent(TKillEvent); Sleep(200); CloseHandle(TKillEvent); end;
-    if TKillProc <> 0 then begin if WaitForSingleObject(TKillProc, 2000) = WAIT_TIMEOUT then TerminateProcess(TKillProc, 0); WaitForSingleObject(TKillProc, 2000); CloseHandle(TKillProc); end;
-    // Release the locks only now, after the game and stub have finished with them.
-    CloseIfOpen(TStubFile);
-    CloseIfOpen(TShimFile);
-    try if TKillPath <> '' then TFile.Delete(TKillPath); except end;
-    try if TKillShim <> '' then TFile.Delete(TKillShim); except end;
-    CloseIfOpen(TBinLock);
-    CloseIfOpen(TDirLock);
-    LaunchLog('Cleanup done');
+    TSession.StopPipe;
+    // Stub, events and handles of this session only; shared files are removed
+    // only if no other session still uses them.
+    TSession.Cleanup;
+    TSession.Log('Cleanup done');
 
-    FGameRunning := False;
+    FLock.Enter;
+    try FSessions.Remove(TSession); finally FLock.Leave; end;
+    TSession.Free;
+
     var ExitCB := FOnGameExit;
     if Assigned(ExitCB) then
       TThread.Queue(nil, procedure begin ExitCB(Self); end);
   end).Start;
-  GamePI.hProcess := 0; // session monitor owns this handle now
   except
-    FGameRunning := False;
     if GamePI.hProcess <> 0 then begin
       TerminateProcess(GamePI.hProcess, 1);
       WaitForSingleObject(GamePI.hProcess, 5000);
       CloseHandle(GamePI.hProcess);
     end;
     if GamePI.hThread <> 0 then CloseHandle(GamePI.hThread);
-    StopPipe;
-    CleanupStub;
+    if S <> nil then
+    begin
+      S.Log('Launch failed; cleaning up this session');
+      S.StopPipe;
+      S.Cleanup;
+      FreeAndNil(S);
+    end;
     raise;
   end;
   finally

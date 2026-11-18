@@ -92,10 +92,23 @@ begin
   // The former fixed-name '-pipe-stub' mode was removed: nxl3p_stub.exe (with a
   // random per-launch exit event) is the only nexon_client.exe stand-in.
 
+  // Single launcher window per machine. Default: a second instance activates the
+  // running window and exits. --multi: the check does not refuse the launch (the
+  // first --multi instance still owns the mutex, so default instances started
+  // afterwards are still turned away). Sessions never use this mutex: any number
+  // of game clients run inside one launcher process.
   var Mutex := CreateMutex(nil, True, 'Global\RuaLauncher_SingleInstance');
-  if (Mutex = 0) or (GetLastError = ERROR_ALREADY_EXISTS) then
+  var MutexTaken := (Mutex = 0) or (GetLastError = ERROR_ALREADY_EXISTS);
+  if MutexTaken and not MultiClientMode then
   begin
     if Mutex <> 0 then CloseHandle(Mutex);
+    var Existing := FindWindow('TFormMain', nil);
+    if Existing <> 0 then
+    begin
+      if IsIconic(Existing) then ShowWindow(Existing, SW_RESTORE)
+      else ShowWindow(Existing, SW_SHOW);
+      SetForegroundWindow(Existing);
+    end;
     Halt(0);
   end;
 
