@@ -66,6 +66,8 @@ type
     FLock:     TCriticalSection;
     FNextId:   Integer;
     FOnGameExit: TNotifyEvent;
+    FLastLaunchedPid: Cardinal;
+    FLastExitedPid:   Cardinal;
   public
     constructor Create;
     destructor Destroy; override;
@@ -75,6 +77,9 @@ type
     function IsRunning: Boolean;
     function RunningCount: Integer;
     property OnGameExit: TNotifyEvent read FOnGameExit write FOnGameExit;
+    // Game PID of the newest launch / of the session whose exit is being reported.
+    property LastLaunchedPid: Cardinal read FLastLaunchedPid;
+    property LastExitedPid: Cardinal read FLastExitedPid;
   end;
 
 // True when started with --multi: a second launcher process is not refused.
@@ -709,6 +714,8 @@ begin
   // 11. Background thread: wait game exit → clean up THIS session only. It owns
   // S and the game handle from here on.
   var TGameProc := GamePI.hProcess;
+  var TGamePid  := GamePI.dwProcessId;
+  FLastLaunchedPid := TGamePid;
   GamePI.hProcess := 0;
   var TSession := S;
   S := nil;
@@ -736,7 +743,11 @@ begin
 
     var ExitCB := FOnGameExit;
     if Assigned(ExitCB) then
-      TThread.Queue(nil, procedure begin ExitCB(Self); end);
+      TThread.Queue(nil, procedure
+      begin
+        FLastExitedPid := TGamePid;
+        ExitCB(Self);
+      end);
   end).Start;
   except
     if GamePI.hProcess <> 0 then begin

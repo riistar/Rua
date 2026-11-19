@@ -8,7 +8,7 @@ interface
 
 uses
   System.SysUtils, System.IOUtils, System.JSON, System.DateUtils,
-  System.Generics.Collections, uCredStore;
+  System.Generics.Collections, System.SyncObjs, Winapi.Windows, uCredStore;
 
 type
   TNexonProfile = record
@@ -39,6 +39,13 @@ procedure UpdatePlaytime(const ProfileName: string; SessionSecs: Int64);
 
 implementation
 
+var
+  // Every read-modify-write of profiles.json runs under this lock. Startup
+  // session checks, token refresh, the 60 s ticker and game-exit handling all
+  // touch the index from different threads; without it they overwrite each
+  // other's updates (lost token expiry / playtime) or read a half-written file.
+  GProfLock: TCriticalSection;
+
 function ProfileIndexPath: string;
 begin
   Result := TPath.Combine(
@@ -46,7 +53,7 @@ begin
     'Rua\profiles.json');
 end;
 
-function LoadProfiles: TArray<TNexonProfile>;
+function LoadProfilesRaw: TArray<TNexonProfile>;
 var
   Path: string;
   Raw:  string;
@@ -112,9 +119,19 @@ begin
   end;
 end;
 
-procedure SaveProfiles(const Profiles: TArray<TNexonProfile>);
+function LoadProfiles: TArray<TNexonProfile>;
+begin
+  GProfLock.Enter;
+  try
+    Result := LoadProfilesRaw;
+  finally
+    GProfLock.Leave;
+  end;
+end;
+
+procedure SaveProfilesRaw(const Profiles: TArray<TNexonProfile>);
 var
-  Path, Dir: string;
+  Path, Dir, Tmp: string;
   Arr:       TJSONArray;
   Obj:       TJSONObject;
   PA:        TJSONArray;
@@ -153,9 +170,27 @@ begin
       Obj.AddPair('products', PA);
       Arr.Add(Obj);
     end;
-    TFile.WriteAllText(Path, Arr.Format(2), TEncoding.UTF8);
+    // Write beside, then swap in: readers never see a truncated index.
+    Tmp := Path + '.tmp';
+    TFile.WriteAllText(Tmp, Arr.Format(2), TEncoding.UTF8);
+    if not MoveFileEx(PChar(Tmp), PChar(Path), MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
+    begin
+      // Fallback (e.g. share without atomic replace): plain overwrite.
+      TFile.WriteAllText(Path, Arr.Format(2), TEncoding.UTF8);
+      TFile.Delete(Tmp);
+    end;
   finally
     Arr.Free;
+  end;
+end;
+
+procedure SaveProfiles(const Profiles: TArray<TNexonProfile>);
+begin
+  GProfLock.Enter;
+  try
+    SaveProfilesRaw(Profiles);
+  finally
+    GProfLock.Leave;
   end;
 end;
 
@@ -165,21 +200,26 @@ var
   i:        Integer;
   Found:    Boolean;
 begin
-  Profiles := LoadProfiles;
-  Found    := False;
-  for i := 0 to High(Profiles) do
-    if Profiles[i].Name = Profile.Name then
+  GProfLock.Enter;
+  try
+    Profiles := LoadProfiles;
+    Found    := False;
+    for i := 0 to High(Profiles) do
+      if Profiles[i].Name = Profile.Name then
+      begin
+        Profiles[i] := Profile;
+        Found       := True;
+        Break;
+      end;
+    if not Found then
     begin
-      Profiles[i] := Profile;
-      Found       := True;
-      Break;
+      SetLength(Profiles, Length(Profiles) + 1);
+      Profiles[High(Profiles)] := Profile;
     end;
-  if not Found then
-  begin
-    SetLength(Profiles, Length(Profiles) + 1);
-    Profiles[High(Profiles)] := Profile;
+    SaveProfiles(Profiles);
+  finally
+    GProfLock.Leave;
   end;
-  SaveProfiles(Profiles);
   CredSave(Profile.Name, Cookies);
 end;
 
@@ -189,15 +229,20 @@ var
   New:      TArray<TNexonProfile>;
   P:        TNexonProfile;
 begin
-  Profiles := LoadProfiles;
-  New      := [];
-  for P in Profiles do
-    if P.Name <> Name then
-    begin
-      SetLength(New, Length(New) + 1);
-      New[High(New)] := P;
-    end;
-  SaveProfiles(New);
+  GProfLock.Enter;
+  try
+    Profiles := LoadProfiles;
+    New      := [];
+    for P in Profiles do
+      if P.Name <> Name then
+      begin
+        SetLength(New, Length(New) + 1);
+        New[High(New)] := P;
+      end;
+    SaveProfiles(New);
+  finally
+    GProfLock.Leave;
+  end;
   CredDelete(Name);
 end;
 
@@ -211,14 +256,19 @@ var
   Profiles: TArray<TNexonProfile>;
   i:        Integer;
 begin
-  Profiles := LoadProfiles;
-  for i := 0 to High(Profiles) do
-    if Profiles[i].Name = ProfileName then
-    begin
-      Profiles[i].LastUsed := Now;
-      Break;
-    end;
-  SaveProfiles(Profiles);
+  GProfLock.Enter;
+  try
+    Profiles := LoadProfiles;
+    for i := 0 to High(Profiles) do
+      if Profiles[i].Name = ProfileName then
+      begin
+        Profiles[i].LastUsed := Now;
+        Break;
+      end;
+    SaveProfiles(Profiles);
+  finally
+    GProfLock.Leave;
+  end;
 end;
 
 procedure UpdateNxLExpiry(const ProfileName: string; Expiry: TDateTime);
@@ -226,14 +276,19 @@ var
   Profiles: TArray<TNexonProfile>;
   i:        Integer;
 begin
-  Profiles := LoadProfiles;
-  for i := 0 to High(Profiles) do
-    if Profiles[i].Name = ProfileName then
-    begin
-      Profiles[i].NxLExpiry := Expiry;
-      Break;
-    end;
-  SaveProfiles(Profiles);
+  GProfLock.Enter;
+  try
+    Profiles := LoadProfiles;
+    for i := 0 to High(Profiles) do
+      if Profiles[i].Name = ProfileName then
+      begin
+        Profiles[i].NxLExpiry := Expiry;
+        Break;
+      end;
+    SaveProfiles(Profiles);
+  finally
+    GProfLock.Leave;
+  end;
 end;
 
 procedure UpdatePlaytime(const ProfileName: string; SessionSecs: Int64);
@@ -242,15 +297,26 @@ var
   i:        Integer;
 begin
   if SessionSecs <= 0 then Exit;
-  Profiles := LoadProfiles;
-  for i := 0 to High(Profiles) do
-    if Profiles[i].Name = ProfileName then
-    begin
-      Inc(Profiles[i].TotalPlaytime, SessionSecs);
-      Inc(Profiles[i].SessionCount);
-      Break;
-    end;
-  SaveProfiles(Profiles);
+  GProfLock.Enter;
+  try
+    Profiles := LoadProfiles;
+    for i := 0 to High(Profiles) do
+      if Profiles[i].Name = ProfileName then
+      begin
+        Inc(Profiles[i].TotalPlaytime, SessionSecs);
+        Inc(Profiles[i].SessionCount);
+        Break;
+      end;
+    SaveProfiles(Profiles);
+  finally
+    GProfLock.Leave;
+  end;
 end;
+
+initialization
+  GProfLock := TCriticalSection.Create;
+
+finalization
+  GProfLock.Free;
 
 end.

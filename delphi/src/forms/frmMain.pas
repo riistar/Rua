@@ -107,7 +107,9 @@ type
     FUpdateAvailable: Boolean; // set by the hash-only auto check (skip-dir-scan)
     FLastProgMs:      Int64;   // throttles progress UI updates (~5/sec)
     FSessionStart:    TDateTime; // when the game client was launched (for playtime)
-    FSessionProfile:  string;   // profile used by the running session
+    FSessionProfile:  string;   // profile used by the newest running session
+    FRunStart:        TDictionary<Cardinal, TDateTime>; // game PID -> launch time
+    FRunProfile:      TDictionary<Cardinal, string>;    // game PID -> profile
     FSessionTimer:    TTimer;   // live session-time ticker
     FTokenTimer:      TTimer;   // 60s ticker that refreshes Token Expires column
     FCleanupOnExit:   Boolean;
@@ -1242,7 +1244,10 @@ begin
     if Profs[I].Name = Profile then
     begin
       AddOrUpdateProfile(Profs[I], Merged);
-      UpdateNxLExpiry(Profile, LastNxLExpiry);
+      // Global is shared by parallel refreshes: only trust a future value,
+      // never overwrite a known expiry with 0 / stale.
+      if LastNxLExpiry > Now then
+        UpdateNxLExpiry(Profile, LastNxLExpiry);
       Break;
     end;
 end;
@@ -1916,20 +1921,62 @@ var
   Elapsed:        TDateTime;
   Msg:            string;
   ExitedProfile:  string;
+  ExitedStart:    TDateTime;
 begin
   ExitedProfile := FSessionProfile;
-  // Report session playtime (launch → exit) for the profile that was running.
-  if FSessionStart > 0 then
+  ExitedStart   := FSessionStart;
+  // Credit the session that actually exited (by game PID), not the newest launch.
+  var ExPid := FLauncher.LastExitedPid;
+  if (FRunStart <> nil) and (ExPid <> 0) and FRunStart.ContainsKey(ExPid) then
   begin
-    Elapsed := Now - FSessionStart;
+    ExitedStart   := FRunStart[ExPid];
+    ExitedProfile := FRunProfile[ExPid];
+    FRunStart.Remove(ExPid);
+    FRunProfile.Remove(ExPid);
+    if FRunStart.Count > 0 then
+    begin
+      // Remaining sessions: point the live ticker at one of them.
+      for var KV in FRunStart do
+      begin
+        FSessionStart   := KV.Value;
+        FSessionProfile := FRunProfile[KV.Key];
+        Break;
+      end;
+    end
+    else
+    begin
+      FSessionStart   := 0;
+      FSessionProfile := '';
+    end;
+  end
+  else if FRunStart <> nil then
+  begin
+    FRunStart.Clear;
+    FRunProfile.Clear;
+    FSessionStart   := 0;
+    FSessionProfile := '';
+  end
+  else
+  begin
+    FSessionStart   := 0;
+    FSessionProfile := '';
+  end;
+  // Report session playtime (launch → exit) for the profile that was running.
+  if ExitedStart > 0 then
+  begin
+    Elapsed := Now - ExitedStart;
     Msg := Format('Game exited. Session time: %s (%s).',
       [FormatDateTime('hh:nn:ss', Elapsed), ExitedProfile]);
     Log(Msg);
     StatusBar.SimpleText := 'Session: ' + FormatDateTime('hh:nn:ss', Elapsed);
-    UpdatePlaytime(ExitedProfile, Round(Elapsed * 86400));
-    FSessionStart   := 0;
-    FSessionProfile := '';
-    FSessionTimer.Enabled := False;
+    // Sanity: ignore negative / implausible spans (clock jump) so one bad
+    // value can't inflate total playtime.
+    if (Elapsed > 0) and (Elapsed < 3) then
+      UpdatePlaytime(ExitedProfile, Round(Elapsed * 86400))
+    else
+      Log('Playtime ignored (implausible elapsed).');
+    if FSessionStart = 0 then
+      FSessionTimer.Enabled := False;
   end
   else
   begin
@@ -2039,6 +2086,16 @@ begin
     // Start the session timer — display elapsed time until the client exits.
     FSessionStart   := Now;
     FSessionProfile := Name;
+    if FRunStart = nil then
+    begin
+      FRunStart   := TDictionary<Cardinal, TDateTime>.Create;
+      FRunProfile := TDictionary<Cardinal, string>.Create;
+    end;
+    if FLauncher.LastLaunchedPid <> 0 then
+    begin
+      FRunStart.AddOrSetValue(FLauncher.LastLaunchedPid, Now);
+      FRunProfile.AddOrSetValue(FLauncher.LastLaunchedPid, Name);
+    end;
     FSessionTimer.Enabled := True;
     // BtnLaunch stays disabled until GameExitHandler fires
   except
