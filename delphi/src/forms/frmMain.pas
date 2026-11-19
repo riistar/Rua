@@ -1840,18 +1840,22 @@ begin
     LvProfiles.Items.EndUpdate;
   end;
   ProactiveTokenRefresh;
-  // Periodic session validity check for the selected profile (same as
-  // clicking its row), every 5th tick (~5 min).
+  // Periodic session validity check for EVERY listed profile (same check as
+  // clicking its row, updates the status icon), every 5th tick (~5 min).
   Inc(FSessionPollTicks);
   if (FSessionPollTicks mod 5 = 0) and (not FInRefreshProfiles) then
   begin
-    var SelProf := SelectedProfile;
-    if SelProf <> '' then
+    var SavedStatus := StatusBar.SimpleText;
+    for var K := 0 to LvProfiles.Items.Count - 1 do
     begin
-      var SelCookies := LoadCookies(SelProf);
-      if SelCookies <> '' then
-        CheckSessionCached(SelProf, SelCookies);
+      if LvProfiles.Items[K].SubItems.Count = 0 then Continue;
+      var PName := LvProfiles.Items[K].SubItems[0];
+      var PCookies := LoadCookies(PName);
+      if (PName = '') or (PCookies = '') then Continue;
+      FSessionCache.Remove(PName); // force a real re-check, not the cached one
+      CheckSessionCached(PName, PCookies);
     end;
+    StatusBar.SimpleText := SavedStatus;
   end;
 end;
 
