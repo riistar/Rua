@@ -108,6 +108,7 @@ type
     FLastProgMs:      Int64;   // throttles progress UI updates (~5/sec)
     FSessionStart:    TDateTime; // when the game client was launched (for playtime)
     FSessionProfile:  string;   // profile used by the newest running session
+    FSessionPollTicks: Integer;  // counts token ticks for the periodic session check
     FRunStart:        TDictionary<Cardinal, TDateTime>; // game PID -> launch time
     FRunProfile:      TDictionary<Cardinal, string>;    // game PID -> profile
     FSessionTimer:    TTimer;   // live session-time ticker
@@ -1839,6 +1840,19 @@ begin
     LvProfiles.Items.EndUpdate;
   end;
   ProactiveTokenRefresh;
+  // Periodic session validity check for the selected profile (same as
+  // clicking its row), every 5th tick (~5 min).
+  Inc(FSessionPollTicks);
+  if (FSessionPollTicks mod 5 = 0) and (not FInRefreshProfiles) then
+  begin
+    var SelProf := SelectedProfile;
+    if SelProf <> '' then
+    begin
+      var SelCookies := LoadCookies(SelProf);
+      if SelCookies <> '' then
+        CheckSessionCached(SelProf, SelCookies);
+    end;
+  end;
 end;
 
 function TFormMain.PlaytimeText(TotalSecs: Int64): string;
