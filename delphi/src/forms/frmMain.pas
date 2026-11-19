@@ -811,6 +811,10 @@ begin
       Item             := LvProfiles.Items.Add;
       Item.Caption     := '';    // col 0: status icon only
       Item.ImageIndex  := 0;    // blue = not yet checked
+      // Keep the last known result across list rebuilds (e.g. game exit).
+      var CachedInfo: TSessionInfo;
+      if FSessionCache.TryGetValue(P.Name, CachedInfo) then
+        Item.ImageIndex := IfThen(CachedInfo.Valid, 1, 2);
       Item.SubItems.Add(P.Name);   // col 1: Profile
       Item.SubItems.Add(P.UserNo); // col 2: UserNo (hidden)
       if P.LastUsed > 0 then
@@ -1841,9 +1845,9 @@ begin
   end;
   ProactiveTokenRefresh;
   // Periodic session validity check for EVERY listed profile (same check as
-  // clicking its row, updates the status icon), every 5th tick (~5 min).
+  // clicking its row, updates the status icon), every 2nd tick (~2 min).
   Inc(FSessionPollTicks);
-  if (FSessionPollTicks mod 5 = 0) and (not FInRefreshProfiles) then
+  if (FSessionPollTicks mod 2 = 0) and (not FInRefreshProfiles) then
   begin
     var SavedStatus := StatusBar.SimpleText;
     for var K := 0 to LvProfiles.Items.Count - 1 do
