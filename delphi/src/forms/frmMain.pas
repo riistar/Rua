@@ -686,7 +686,10 @@ begin
   // Header configuration. HeaderHeight grows the tab-strip band without growing
   // the tab captions. Set a picture on HeaderImage to draw an aligned background
   // image behind the tabs (see uHeaderPageControl).
-  NewPC.HeaderHeight := 40;
+  // Band must reach the bottom of the Rua peek image (Top 0 + Height 57 vs
+  // FHeaderTop 8): the windowed page body paints over any part of the TImage
+  // below the band, which clips her hands under custom VCL styles.
+  NewPC.HeaderHeight := 49;
 
   // The buttons (Panel1, alBottom) re-dock to the bottom edge on resize, so keep
   // the header control filling the page area above it. (We use alNone + explicit
