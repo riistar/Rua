@@ -3,7 +3,7 @@ object FormMain: TFormMain
   Top = 0
   Caption = 'Rua - Mabinogi Launcher'
   ClientHeight = 585
-  ClientWidth = 938
+  ClientWidth = 998
   Color = clBtnFace
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
@@ -1539,7 +1539,7 @@ object FormMain: TFormMain
     object PnlLeft: TPanel
       Left = 0
       Top = 0
-      Width = 377
+      Width = 437
       Height = 566
       Align = alLeft
       BevelOuter = bvNone

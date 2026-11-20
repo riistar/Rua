@@ -822,7 +822,7 @@ begin
       Item.SubItems.Add(P.Name);   // col 1: Profile
       Item.SubItems.Add(P.UserNo); // col 2: UserNo (hidden)
       if P.LastUsed > 0 then
-        Item.SubItems.Add(FormatDateTime(FormatSettings.ShortDateFormat + ' ' + FormatSettings.ShortTimeFormat, P.LastUsed))
+        Item.SubItems.Add(FormatDateTime('dd/mm/yy h:nn am/pm', P.LastUsed))
       else
         Item.SubItems.Add('Never'); // col 3: Last Used
       // col 4: Session time (live; updated by the session timer)
