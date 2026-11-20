@@ -36,6 +36,8 @@ type
     DateColor:  TColor;
     IsMaintenance: Boolean;
     Url:        string;   // built article URL ('' → fall back to the hub)
+    SumH:       Integer;  // wrapped summary height (measured on the worker)
+    CardH:      Integer;  // final card height (measured on the worker)
   end;
 
   TNewsFeed = class(TScrollBox)
@@ -297,7 +299,7 @@ begin
     I, J: Integer;
     ChipW: Integer;
     Cat: string;
-    Meas: TBitmap;
+    Meas, MeasS: TBitmap;
     Bg, SubCol, TextCol: TColor;
     It: TNewsItem;
     P: TNewsCardPrep;
@@ -349,6 +351,8 @@ begin
 
     // Prepare each card (ellipsize text, compute colours) — no controls created.
     SetLength(Prep, Length(View));
+    MeasS := TBitmap.Create;
+    try
     for I := 0 to High(View) do
     begin
       It := View[I];
@@ -398,7 +402,24 @@ begin
       // Build the article URL: /mabinogi/news/<abs(Id)>/<slugified-title>.
       P.Url := BuildNewsUrl(It.Id, It.Title);
 
+      // Wrapped summary height + card height: DrawText measuring is the slow part
+      // of BuildCards, so do it here (TBitmap has its own DC; safe off-thread).
+      P.SumH := 0;
+      if P.Summary <> '' then
+      begin
+        MeasS.Canvas.Font.Name  := 'Segoe UI';
+        MeasS.Canvas.Font.Size  := 8;
+        MeasS.Canvas.Font.Style := [];
+        P.SumH := WrappedTextHeight(MeasS.Canvas, P.Summary,
+          CW - (PAD + ChipW + PAD) - DateWConst - PAD);
+      end;
+      P.CardH := 6 + 18 + 4 + P.SumH + 8;
+      if P.CardH < CARD_H then P.CardH := CARD_H;
+
       Prep[I] := P;
+    end;
+    finally
+      MeasS.Free;
     end;
 
     if FBuildToken <> Token then Exit;
@@ -431,7 +452,6 @@ var
   TxX, TxW: Integer;
   P: TNewsCardPrep;
   CardH, SumH: Integer;
-  Meas: TBitmap;
 begin
   // Clear previous cards.
   for I := 0 to Length(FChips) - 1 do
@@ -444,7 +464,10 @@ begin
     Exit;
   end;
 
-  Meas := TBitmap.Create;   // for measuring wrapped summary height (real DC)
+  // Batch: no repaint / realign per card (alBottom realigns every sibling on
+  // each insert, which is O(n^2) and visibly stalls the UI).
+  DisableAlign;
+  if HandleAllocated then SendMessage(Handle, WM_SETREDRAW, 0, 0);
   try
   // Build one card per item (stacked bottom-up). Cards grow tall to fit the
   // word-wrapped summary.
@@ -455,19 +478,9 @@ begin
     TxX := PAD + FChipW + PAD;
     TxW := ClientWidth - TxX - DateWConst - PAD;
 
-    // Measure the wrapped summary height first so we can size the card.
-    SumH := 0;
-    if P.Summary <> '' then
-    begin
-      Meas.Canvas.Font.Name  := 'Segoe UI';
-      Meas.Canvas.Font.Size  := 8;
-      Meas.Canvas.Font.Style := [];
-      SumH := WrappedTextHeight(Meas.Canvas, P.Summary, TxW);
-    end;
-
-    // Base card: title row (18px) + gap + summary (SumH) + bottom padding.
-    CardH := 6 + 18 + 4 + SumH + 8;
-    if CardH < CARD_H then CardH := CARD_H;
+    // Heights were measured on the worker thread (see SetNews).
+    SumH  := P.SumH;
+    CardH := P.CardH;
 
     Card := TPanel.Create(Self);
     Card.Parent        := Self;
@@ -574,7 +587,12 @@ begin
     FChips[High(FChips)] := Card;
   end;
   finally
-    Meas.Free;
+    EnableAlign;
+    if HandleAllocated then
+    begin
+      SendMessage(Handle, WM_SETREDRAW, 1, 0);
+      RedrawWindow(Handle, nil, 0, RDW_ERASE or RDW_INVALIDATE or RDW_ALLCHILDREN or RDW_FRAME);
+    end;
   end;
 end;
 

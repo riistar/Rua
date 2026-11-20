@@ -822,7 +822,7 @@ begin
       Item.SubItems.Add(P.Name);   // col 1: Profile
       Item.SubItems.Add(P.UserNo); // col 2: UserNo (hidden)
       if P.LastUsed > 0 then
-        Item.SubItems.Add(DateTimeToStr(P.LastUsed))
+        Item.SubItems.Add(FormatDateTime(FormatSettings.ShortDateFormat + ' ' + FormatSettings.ShortTimeFormat, P.LastUsed))
       else
         Item.SubItems.Add('Never'); // col 3: Last Used
       // col 4: Session time (live; updated by the session timer)
@@ -1927,6 +1927,8 @@ begin
       OldIds.Free;
     end;
 
+    if HasNew then
+      try SaveNewsCache(ProductId, Fresh); except end;
     TThread.Queue(nil, procedure
     begin
       // Reset back-off on any successful fetch
@@ -1936,7 +1938,6 @@ begin
       if not HasNew then Exit;
       FNews := Fresh;
       FNewsFeed.SetNews(FNews);
-      SaveNewsCache(ProductId, Fresh);
       // Badge: increment unseen count and update tab caption
       Inc(FNewsNewCount);
       if PageControl1.ActivePage <> TabSheet1 then
@@ -2230,6 +2231,9 @@ begin
     except
       News := nil;
     end;
+    // Disk write stays off the UI thread.
+    if Length(News) > 0 then
+      try SaveNewsCache(FProductId, News); except end;
     TThread.Queue(nil, procedure
     begin
       // Only replace what we rendered if a newer/complete list came back.
@@ -2237,7 +2241,6 @@ begin
       begin
         FNews := News;
         FNewsFeed.SetNews(FNews);
-        SaveNewsCache(FProductId, News);
       end;
       // Start the background refresh timer after the first network attempt.
       FNewsRefreshTimer.Enabled := True;
