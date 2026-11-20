@@ -521,6 +521,7 @@ begin
     LblTitle.AutoSize       := False;
     LblTitle.Width          := TxW;
     LblTitle.Height         := 18;
+    LblTitle.Anchors        := [akLeft, akTop, akRight];
     LblTitle.Font.Style     := [fsBold];
     LblTitle.Font.Size      := 9;
     LblTitle.Font.Name      := 'Segoe UI';
@@ -548,6 +549,7 @@ begin
       LblSummary.AutoSize     := False;
       LblSummary.Width        := TxW;
       LblSummary.Height       := SumH;
+      LblSummary.Anchors      := [akLeft, akTop, akRight];
       LblSummary.WordWrap     := True;
       LblSummary.AutoSize     := False;
       LblSummary.Font.Style   := [];
@@ -572,6 +574,9 @@ begin
       LblDate.Height         := 18;
       LblDate.Top            := 6;
       LblDate.Left           := Card.Width - PAD - DateWConst;
+      // Track the card's right edge: the feed's final width can differ from the
+      // width at build time (layout settles after), which pushed dates off-view.
+      LblDate.Anchors        := [akTop, akRight];
       LblDate.Caption        := P.DateText;
       LblDate.Alignment      := taRightJustify;
       LblDate.Font.Size      := 9;
