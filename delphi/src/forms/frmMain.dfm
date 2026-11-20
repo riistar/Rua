@@ -1644,7 +1644,7 @@ object FormMain: TFormMain
         566)
       object Rua: TImage
         Left = 468
-        Top = -8
+        Top = -3
         Width = 85
         Height = 57
         Anchors = [akTop, akRight]
