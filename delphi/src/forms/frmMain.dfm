@@ -1531,7 +1531,7 @@ object FormMain: TFormMain
   object PnlTop: TPanel
     Left = 0
     Top = 0
-    Width = 938
+    Width = 998
     Height = 566
     Align = alClient
     BevelOuter = bvNone
@@ -1627,7 +1627,7 @@ object FormMain: TFormMain
       end
     end
     object PnlRight: TPanel
-      Left = 377
+      Left = 437
       Top = 0
       Width = 561
       Height = 566
