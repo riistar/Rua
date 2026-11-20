@@ -95,6 +95,7 @@ type
     FTrayOnLaunch:   Boolean;
     FRememberLastProfile: Boolean;
     FLastSelectedProfile: string;
+  FSelectedProfile: string; // in-memory: last launched / user-clicked; survives list rebuilds
     FSortAlpha:      Boolean;
     FSessionCache:   TDictionary<string, TSessionInfo>;
     FTrayIcon:        TTrayIcon;
@@ -844,11 +845,14 @@ begin
   try
     if LvProfiles.Items.Count > 0 then
     begin
-      var SelIdx := 0;
-      if FRememberLastProfile and (FLastSelectedProfile <> '') then
+      var SelIdx := -1;
+      var Want := FSelectedProfile;
+      if (Want = '') and FRememberLastProfile then Want := FLastSelectedProfile;
+      if Want <> '' then
         for var PIdx := 0 to LvProfiles.Items.Count - 1 do
-          if LvProfiles.Items[PIdx].SubItems[0] = FLastSelectedProfile then
+          if LvProfiles.Items[PIdx].SubItems[0] = Want then
           begin SelIdx := PIdx; Break; end;
+      if SelIdx < 0 then SelIdx := 0;
       LvProfiles.Items[SelIdx].Selected := True;
     end;
   finally
@@ -1763,7 +1767,7 @@ end;
 
 procedure TFormMain.TrayProfileClick(Sender: TObject);
 begin
-  TrayShowClick(Sender); // restore window so user can see launch progress
+  // Launch straight from tray; leave main form hidden/minimized.
   LaunchProfile(TMenuItem(Sender).Hint); // Hint holds real name; Caption has && escaping
 end;
 
@@ -2098,6 +2102,7 @@ begin
           raise;
       end;
     end;
+    FSelectedProfile := Name;
     UpdateLastUsed(Name);
     if FRememberLastProfile then
     begin
@@ -2337,6 +2342,7 @@ begin
   end;
   if FInRefreshProfiles then Exit;
   Profile := SelectedProfile;
+  if Profile <> '' then FSelectedProfile := Profile;
   Cookies := LoadCookies(Profile);
   if (Profile = '') or (Cookies = '') then
   begin
